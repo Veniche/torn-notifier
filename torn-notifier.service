@@ -1,0 +1,13 @@
+[Unit]
+Description=Torn travel notifier Discord bot
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/USERNAME/torn-notifier
+ExecStart=/home/USERNAME/torn-notifier/venv/bin/python torn_travel_notifier.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
