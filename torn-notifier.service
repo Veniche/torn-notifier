@@ -4,6 +4,7 @@ After=network-online.target
 
 [Service]
 Type=simple
+User=USERNAME
 WorkingDirectory=/home/USERNAME/torn-notifier
 ExecStart=/home/USERNAME/torn-notifier/venv/bin/python torn_travel_notifier.py
 Restart=on-failure

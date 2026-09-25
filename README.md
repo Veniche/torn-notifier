@@ -1,8 +1,9 @@
 # Torn travel notifier
 
-DMs you on Discord a few seconds before you land in Torn. Polls the
-Torn API on an interval, then schedules one precise alert per trip
-instead of polling tightly near landing time.
+DMs you on Discord a few seconds before your flight lands abroad in
+Torn. Polls the Torn API on an interval, then schedules one precise
+alert per trip instead of polling tightly near landing time. Return
+flights to Torn don't trigger an alert.
 
 ## 1. Create the Discord bot
 
@@ -15,23 +16,32 @@ instead of polling tightly near landing time.
 
 ## 2. Get your Discord user ID
 
-Settings → **Advanced** → enable **Developer Mode** → right-click your own
+User Settings → **Advanced** → enable **Developer Mode** → right-click your own
 name anywhere → **Copy User ID** → put it in `.env` as `DISCORD_USER_ID`.
 
 ## 3. Get a Torn API key
 
 torn.com → **Settings → API** → create a new key with **Minimal Access**
-(that should cover the `travel` selection). If the bot logs an "access
-level" error on startup, bump the key to **Limited Access** instead —
-put whichever key works in `.env` as `TORN_API_KEY`.
+(enough for the `travel` selection) → put it in `.env` as `TORN_API_KEY`.
+If the bot logs an access-level error, check the key's level on that page.
 
 ## 4. Run it
+
+Create a `.env` file in this folder:
+
+```
+DISCORD_BOT_TOKEN=your-bot-token
+DISCORD_USER_ID=your-user-id
+TORN_API_KEY=your-api-key
+# optional
+# ALERT_LEAD_SECONDS=20
+# POLL_INTERVAL_SECONDS=60
+```
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # then fill in your values
 python torn_travel_notifier.py
 ```
 
@@ -41,7 +51,8 @@ moving to step 5.
 ## 5. Keep it running (systemd)
 
 ```bash
-# edit torn-notifier.service first — replace USERNAME with your actual user
+# edit torn-notifier.service first — replace every USERNAME with your
+# actual user, and make sure the paths match where you cloned this repo
 sudo cp torn-notifier.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now torn-notifier
@@ -56,19 +67,7 @@ journalctl -u torn-notifier -f        # tail logs
   Lower this (e.g. to 15–20) if you take short domestic trips, since a
   60s poll can miss detecting a trip that's already almost over.
 
-## Pushing to GitHub
+Set these in `.env`, then restart the service
+(`sudo systemctl restart torn-notifier`).
 
-This wasn't pushed for you — no GitHub connection is set up on this
-side, and pushing needs your own auth. From this folder:
-
-```bash
-git init
-git add .
-git commit -m "Initial commit: Torn travel notifier"
-gh repo create torn-notifier --private --source=. --push
-# or, without gh CLI: create the repo on github.com first, then
-# git remote add origin <url> && git branch -M main && git push -u origin main
-```
-
-`.env` is already git-ignored — double check it's not staged before
-your first commit.
+Keep `.env` out of git; it's listed in `.gitignore`.

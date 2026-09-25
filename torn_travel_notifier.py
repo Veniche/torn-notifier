@@ -4,7 +4,7 @@ Torn travel notifier — Discord DM a few seconds before you land.
 Polls Torn's API for your travel status. Once a trip is detected, it
 schedules a single precise alert timed to fire shortly before arrival,
 rather than polling every few seconds (which would burn API calls and
-risk look like scripted hammering).
+risk looking like scripted hammering).
 """
 
 import asyncio
@@ -36,6 +36,8 @@ client = discord.Client(intents=intents)
 # Arrival timestamp we've already scheduled an alert for, so a repeat
 # poll of the same trip doesn't schedule a second alert.
 scheduled_arrival: int | None = None
+alert_task: asyncio.Task | None = None
+poll_task: asyncio.Task | None = None
 
 
 async def fetch_travel(session: aiohttp.ClientSession) -> dict:
@@ -56,7 +58,7 @@ async def schedule_alert(destination: str, delay: int) -> None:
 
 
 async def poll_loop() -> None:
-    global scheduled_arrival
+    global scheduled_arrival, alert_task
     await client.wait_until_ready()
 
     async with aiohttp.ClientSession() as session:
@@ -81,8 +83,13 @@ async def poll_loop() -> None:
                     is_traveling = bool(destination) and destination != "Torn" and time_left > 0
 
                     if is_traveling:
-                        arrival = int(time.time()) + time_left
+                        # Prefer Torn's fixed arrival timestamp: recomputing it
+                        # from time_left drifts by a second between polls and
+                        # would schedule duplicate alerts for the same trip.
+                        arrival = travel.get("timestamp") or int(time.time()) + time_left
                         if arrival != scheduled_arrival:
+                            if alert_task and not alert_task.done():
+                                alert_task.cancel()
                             scheduled_arrival = arrival
                             delay = max(time_left - ALERT_LEAD_SECONDS, 0)
                             log.info(
@@ -90,7 +97,7 @@ async def poll_loop() -> None:
                                 "alert scheduled in %ss",
                                 destination, time_left, delay,
                             )
-                            asyncio.create_task(schedule_alert(destination, delay))
+                            alert_task = asyncio.create_task(schedule_alert(destination, delay))
                     else:
                         scheduled_arrival = None
 
@@ -102,8 +109,11 @@ async def poll_loop() -> None:
 
 @client.event
 async def on_ready() -> None:
+    global poll_task
     log.info("Logged in as %s", client.user)
-    client.loop.create_task(poll_loop())
+    # on_ready fires again after reconnects; only ever run one poll loop.
+    if poll_task is None or poll_task.done():
+        poll_task = asyncio.create_task(poll_loop())
 
 
 if __name__ == "__main__":
