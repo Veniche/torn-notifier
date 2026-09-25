@@ -1,9 +1,9 @@
 # Torn travel notifier
 
-DMs you on Discord a few seconds before your flight lands abroad in
-Torn. Polls the Torn API on an interval, then schedules one precise
-alert per trip instead of polling tightly near landing time. Return
-flights to Torn don't trigger an alert.
+DMs you on Discord a few seconds before your flight lands in Torn,
+both abroad and on the way back home. Polls the Torn API on an
+interval, then schedules one precise alert per trip instead of polling
+tightly near landing time.
 
 ## 1. Create the Discord bot
 

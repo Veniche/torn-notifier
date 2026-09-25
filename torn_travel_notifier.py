@@ -80,7 +80,7 @@ async def poll_loop() -> None:
                     travel = data.get("travel", {})
                     destination = travel.get("destination")
                     time_left = travel.get("time_left", 0)
-                    is_traveling = bool(destination) and destination != "Torn" and time_left > 0
+                    is_traveling = bool(destination) and time_left > 0
 
                     if is_traveling:
                         # Prefer Torn's fixed arrival timestamp: recomputing it
