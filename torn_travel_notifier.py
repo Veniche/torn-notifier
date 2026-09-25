@@ -119,4 +119,6 @@ async def on_ready() -> None:
 
 
 if __name__ == "__main__":
-    client.run(DISCORD_BOT_TOKEN)
+    # log_handler=None: discord.py's logs go through basicConfig above
+    # instead of a second handler that would print every line twice.
+    client.run(DISCORD_BOT_TOKEN, log_handler=None)
