@@ -63,9 +63,10 @@ journalctl -u torn-notifier -f        # tail logs
 ## Tuning
 
 - `ALERT_LEAD_SECONDS` — how many seconds before landing the DM fires (default 20).
-- `POLL_INTERVAL_SECONDS` — how often it checks travel status (default 60).
-  Lower this (e.g. to 15–20) if you take short domestic trips, since a
-  60s poll can miss detecting a trip that's already almost over.
+- `POLL_INTERVAL_SECONDS` — how often it checks for a new trip (default 60).
+  This only affects how soon a trip is detected, not alert accuracy: the
+  alert is timed from Torn's arrival timestamp. The default is fine even
+  for the shortest flights.
 
 Set these in `.env`, then restart the service
 (`sudo systemctl restart torn-notifier`).

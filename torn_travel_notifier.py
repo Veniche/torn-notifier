@@ -91,7 +91,9 @@ async def poll_loop() -> None:
                             if alert_task and not alert_task.done():
                                 alert_task.cancel()
                             scheduled_arrival = arrival
-                            delay = max(time_left - ALERT_LEAD_SECONDS, 0)
+                            # Time from the fixed arrival, not time_left: a cached
+                            # API response can report a stale time_left.
+                            delay = max(arrival - int(time.time()) - ALERT_LEAD_SECONDS, 0)
                             log.info(
                                 "Trip to %s detected — landing in %ss, "
                                 "alert scheduled in %ss",
