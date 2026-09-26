@@ -1,9 +1,9 @@
 # Torn travel notifier
 
 DMs you on Discord a few seconds before your flight lands in Torn,
-both abroad and on the way back home. Polls the Torn API on an
-interval, then schedules one precise alert per trip instead of polling
-tightly near landing time.
+both abroad and on the way back home, and when your drug cooldown ends.
+Polls the Torn API on an interval, then schedules one precise alert per
+trip or cooldown instead of polling tightly near the deadline.
 
 ## 1. Create the Discord bot
 
@@ -22,8 +22,9 @@ name anywhere → **Copy User ID** → put it in `.env` as `DISCORD_USER_ID`.
 ## 3. Get a Torn API key
 
 torn.com → **Settings → API** → create a new key with **Minimal Access**
-(enough for the `travel` selection) → put it in `.env` as `TORN_API_KEY`.
-If the bot logs an access-level error, check the key's level on that page.
+→ put it in `.env` as `TORN_API_KEY`. The bot reads the `travel` and
+`cooldowns` selections; if it logs an access-level error, raise the key to
+**Limited Access**. Don't use a Full Access key — the bot never needs it.
 
 ## 4. Run it
 
@@ -63,6 +64,7 @@ journalctl -u torn-notifier -f        # tail logs
 ## Tuning
 
 - `ALERT_LEAD_SECONDS` — how many seconds before landing the DM fires (default 30).
+  The drug alert fires when the cooldown reaches 0.
 - `POLL_INTERVAL_SECONDS` — how often it checks for a new trip (default 60).
   This only affects how soon a trip is detected, not alert accuracy: the
   alert is timed from Torn's arrival timestamp. The default is fine even
