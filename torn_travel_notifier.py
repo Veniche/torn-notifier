@@ -23,7 +23,7 @@ DISCORD_USER_ID = int(os.environ["DISCORD_USER_ID"])
 TORN_API_KEY = os.environ["TORN_API_KEY"]
 
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
-ALERT_LEAD_SECONDS = int(os.getenv("ALERT_LEAD_SECONDS", "20"))
+ALERT_LEAD_SECONDS = int(os.getenv("ALERT_LEAD_SECONDS", "30"))
 
 TORN_API_URL = "https://api.torn.com/user/"
 

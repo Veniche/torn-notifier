@@ -34,7 +34,7 @@ DISCORD_BOT_TOKEN=your-bot-token
 DISCORD_USER_ID=your-user-id
 TORN_API_KEY=your-api-key
 # optional
-# ALERT_LEAD_SECONDS=20
+# ALERT_LEAD_SECONDS=30
 # POLL_INTERVAL_SECONDS=60
 ```
 
@@ -62,7 +62,7 @@ journalctl -u torn-notifier -f        # tail logs
 
 ## Tuning
 
-- `ALERT_LEAD_SECONDS` — how many seconds before landing the DM fires (default 20).
+- `ALERT_LEAD_SECONDS` — how many seconds before landing the DM fires (default 30).
 - `POLL_INTERVAL_SECONDS` — how often it checks for a new trip (default 60).
   This only affects how soon a trip is detected, not alert accuracy: the
   alert is timed from Torn's arrival timestamp. The default is fine even
