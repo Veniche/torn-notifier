@@ -5,6 +5,10 @@ both abroad and on the way back home, and when your drug cooldown ends.
 Polls the Torn API on an interval, then schedules one precise alert per
 trip or cooldown instead of polling tightly near the deadline.
 
+When you're about to land back in Torn, it also sends a **plushie & flower
+stock report** for your next trip, and you can pull one any time with the
+`/stock` slash command in the bot's DMs.
+
 ## 1. Create the Discord bot
 
 1. https://discord.com/developers/applications → **New Application**.
@@ -36,6 +40,7 @@ DISCORD_USER_ID=your-user-id
 TORN_API_KEY=your-api-key
 # optional
 # ALERT_LEAD_SECONDS=30
+# TRAVEL_CAPACITY=5
 # POLL_INTERVAL_SECONDS=60
 ```
 
@@ -70,7 +75,33 @@ journalctl -u torn-notifier -f        # tail logs
   alert is timed from Torn's arrival timestamp. The default is fine even
   for the shortest flights.
 
+- `TRAVEL_CAPACITY` — how many items you can carry per trip (default 5).
+  Set this to your real capacity; profit numbers scale with it.
+- `STOCK_POLL_SECONDS` — how often stock snapshots are taken (default 300).
+
 Set these in `.env`, then restart the service
 (`sudo systemctl restart torn-notifier`).
 
 Keep `.env` out of git; it's listed in `.gitignore`.
+
+## Stock report
+
+Grouped by trip length (short: Mexico, Cayman, Canada · medium: Hawaii,
+UK, Argentina, Switzerland · long: Japan, China, UAE, South Africa) and
+sorted by profit per hour. For each plushie and flower it shows:
+
+- **Stock now → predicted at landing.** Stock comes from
+  [YATA](https://yata.yt)'s public travel export, which players' scripts
+  keep updated. The bot snapshots it every 5 minutes and uses the last 90
+  minutes to estimate how fast each item sells, then projects that over
+  your flight. Until it has ~20 minutes of history it shows "no trend yet".
+  Restocks aren't predicted: an item that's out now is listed as out.
+- **Profit per trip:** (Torn market value − shop cost) × the items you can
+  actually buy (your capacity, or the predicted stock if lower).
+- **Profit per hour:** profit per trip ÷ round-trip flight time.
+
+Flight times start from Torn's standard table for your travel method and
+switch to your real flight times once the bot has seen you fly there.
+Snapshots and flight times are kept in `state.json` so restarts don't lose
+them. Market value is an average of recent sales, so real sale prices can
+be a bit lower.

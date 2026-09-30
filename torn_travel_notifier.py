@@ -1,6 +1,7 @@
 """
 Torn notifier — Discord DM a few seconds before you land, and when your
-drug cooldown ends.
+drug cooldown ends. When you're about to land back in Torn it also sends a
+plushie/flower stock report for your next trip (or run /stock any time).
 
 Polls Torn's API for your travel status and cooldowns. Once a trip or
 cooldown is detected, it schedules a single precise alert, rather than
@@ -17,7 +18,10 @@ import time
 
 import aiohttp
 import discord
+from discord import app_commands
 from dotenv import load_dotenv
+
+import stock
 
 load_dotenv()
 
@@ -27,6 +31,9 @@ TORN_API_KEY = os.environ["TORN_API_KEY"]
 
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
 ALERT_LEAD_SECONDS = int(os.getenv("ALERT_LEAD_SECONDS", "30"))
+TRAVEL_CAPACITY = int(os.getenv("TRAVEL_CAPACITY", "5"))
+STOCK_POLL_SECONDS = int(os.getenv("STOCK_POLL_SECONDS", "300"))
+STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
 
 # Cooldowns only come back as "seconds remaining", so the end time we
 # derive jitters between polls (rounding, cached responses). Only treat
@@ -40,6 +47,9 @@ log = logging.getLogger("torn-notifier")
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
+tree = app_commands.CommandTree(client)
+tracker = stock.StockTracker(STATE_PATH, TORN_API_KEY, TRAVEL_CAPACITY)
+http: aiohttp.ClientSession | None = None
 
 # Arrival timestamp we've already scheduled an alert for, so a repeat
 # poll of the same trip doesn't schedule a second alert.
@@ -51,6 +61,7 @@ scheduled_drug_end: int | None = None
 drug_task: asyncio.Task | None = None
 
 poll_task: asyncio.Task | None = None
+stock_task: asyncio.Task | None = None
 
 
 async def fetch_status(session: aiohttp.ClientSession) -> dict:
@@ -70,9 +81,26 @@ async def send_later(text: str, delay: int) -> None:
     await send_dm(text)
 
 
+async def fresh_stock_embeds() -> list[discord.Embed]:
+    try:
+        await tracker.refresh(http)
+    except Exception as exc:  # fall back to the last snapshot we have
+        log.error("Stock refresh failed: %s", exc)
+    return [discord.Embed.from_dict(e) for e in tracker.report_embeds()]
+
+
+async def land_home_later(text: str, delay: int) -> None:
+    """Landing alert for a flight back to Torn, followed by the stock report."""
+    await send_later(text, delay)
+    user = await client.fetch_user(DISCORD_USER_ID)
+    await user.send(embeds=await fresh_stock_embeds())
+    log.info("Stock report sent")
+
+
 def handle_travel(travel: dict) -> None:
     global scheduled_arrival, alert_task
 
+    tracker.note_travel(travel)
     destination = travel.get("destination")
     time_left = travel.get("time_left", 0)
     if not (destination and time_left > 0):
@@ -96,9 +124,9 @@ def handle_travel(travel: dict) -> None:
         "Trip to %s detected — landing in %ss, alert scheduled in %ss",
         destination, time_left, delay,
     )
-    alert_task = asyncio.create_task(
-        send_later(f"🛬 Landing in ~{ALERT_LEAD_SECONDS}s — {destination}", delay)
-    )
+    text = f"🛬 Landing in ~{ALERT_LEAD_SECONDS}s — {destination}"
+    job = land_home_later if destination == "Torn" else send_later
+    alert_task = asyncio.create_task(job(text, delay))
 
 
 def handle_drug_cooldown(remaining: int) -> None:
@@ -124,38 +152,68 @@ def handle_drug_cooldown(remaining: int) -> None:
 async def poll_loop() -> None:
     await client.wait_until_ready()
 
-    async with aiohttp.ClientSession() as session:
-        while not client.is_closed():
-            try:
-                data = await fetch_status(session)
+    while not client.is_closed():
+        try:
+            data = await fetch_status(http)
 
-                if "error" in data:
-                    code = data["error"].get("code")
-                    if code == 16:
-                        log.error(
-                            "API key doesn't have access to the travel/cooldowns "
-                            "selections — check its access level on "
-                            "torn.com/preferences.php#tab=api"
-                        )
-                    else:
-                        log.error("Torn API error: %s", data["error"])
+            if "error" in data:
+                code = data["error"].get("code")
+                if code == 16:
+                    log.error(
+                        "API key doesn't have access to the travel/cooldowns "
+                        "selections — check its access level on "
+                        "torn.com/preferences.php#tab=api"
+                    )
                 else:
-                    handle_travel(data.get("travel", {}))
-                    handle_drug_cooldown(data.get("cooldowns", {}).get("drug", 0))
+                    log.error("Torn API error: %s", data["error"])
+            else:
+                handle_travel(data.get("travel", {}))
+                handle_drug_cooldown(data.get("cooldowns", {}).get("drug", 0))
 
-            except Exception as exc:  # keep the loop alive across transient errors
-                log.error("Poll failed: %s", exc)
+        except Exception as exc:  # keep the loop alive across transient errors
+            log.error("Poll failed: %s", exc)
 
-            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+
+async def stock_loop() -> None:
+    """Snapshot YATA stock regularly so sell-rates are ready when needed."""
+    while not client.is_closed():
+        try:
+            await tracker.refresh(http)
+        except Exception as exc:
+            log.error("Stock refresh failed: %s", exc)
+        await asyncio.sleep(STOCK_POLL_SECONDS)
+
+
+@tree.command(name="stock", description="Plushie & flower stock, predicted at landing")
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+async def stock_command(interaction: discord.Interaction) -> None:
+    # The repo is public and the bot sits in a server; only answer its owner.
+    if interaction.user.id != DISCORD_USER_ID:
+        await interaction.response.send_message("This bot is private.", ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    await interaction.followup.send(embeds=await fresh_stock_embeds())
+
+
+async def setup_hook() -> None:
+    global http
+    http = aiohttp.ClientSession()
+    await tree.sync()
+
+client.setup_hook = setup_hook
 
 
 @client.event
 async def on_ready() -> None:
-    global poll_task
+    global poll_task, stock_task
     log.info("Logged in as %s", client.user)
-    # on_ready fires again after reconnects; only ever run one poll loop.
+    # on_ready fires again after reconnects; only ever run one of each loop.
     if poll_task is None or poll_task.done():
         poll_task = asyncio.create_task(poll_loop())
+    if stock_task is None or stock_task.done():
+        stock_task = asyncio.create_task(stock_loop())
 
 
 if __name__ == "__main__":
