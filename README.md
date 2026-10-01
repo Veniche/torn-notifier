@@ -8,7 +8,7 @@ trip or cooldown instead of polling tightly near the deadline.
 When you're about to land back in Torn, it also sends a **foreign stock
 report** (best items to buy abroad) for your next trip, and you can pull one any time with the
 `/travel` (or `/t`) slash command in the bot's DMs. `/travel-restock`
-(or `/trs`, `/trestock`) shows stock and estimated restock times for the
+(or `/trs`) shows stock and estimated restock times for the
 country you're in (or any country). `/sell item:<name>` compares every way
 to sell an item. Discord has no real aliases, so each short name is its
 own entry in the `/` menu.

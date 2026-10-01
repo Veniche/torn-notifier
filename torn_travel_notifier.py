@@ -265,7 +265,7 @@ async def sell_command(interaction: discord.Interaction, item: str,
 # pointing at the same handler.
 COMMANDS = [
     (["travel", "t"], "Best items to buy abroad, with stock predicted at landing", travel_command),
-    (["travel-restock", "trs", "trestock"], "Stock and restock times where you are (or a chosen country)",
+    (["travel-restock", "trs"], "Stock and restock times where you are (or a chosen country)",
      restock_command),
     (["sell"], "Best place to sell an item: TornExchange traders vs item market", sell_command),
 ]
