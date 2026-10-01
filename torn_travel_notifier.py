@@ -74,9 +74,10 @@ def item_value(name: str) -> int | None:
     return tracker.best_sale(item_id)[0] if item_id is not None else None
 
 
-# Cash to keep ready on top of rent and upkeep, e.g. Xanax for happy jumps.
-STOCKS_RESERVE = int(os.getenv("STOCKS_RESERVE", "0"))
-market = stocks.StockMarket(TORN_API_KEY, item_value, STOCKS_RESERVE)
+# Cash /stocks keeps ready before counting money toward dividend blocks
+# (rent, upkeep, Xanax...). Accepts 38m / 500k / 1.2bn / plain digits.
+STOCKS_RESERVE = stocks.parse_amount(os.getenv("STOCKS_RESERVE") or "0")
+market = stocks.StockMarket(TORN_API_KEY, item_value)
 
 # Arrival timestamp we've already scheduled an alert for, so a repeat
 # poll of the same trip doesn't schedule a second alert.
@@ -292,15 +293,25 @@ async def sell_command(interaction: discord.Interaction, item: Optional[str] = N
     await interaction.followup.send(embed=discord.Embed.from_dict(embed))
 
 
-async def stocks_command(interaction: discord.Interaction) -> None:
+@app_commands.describe(reserve="Cash to keep ready for this check, e.g. 38m (default: STOCKS_RESERVE)")
+async def stocks_command(interaction: discord.Interaction, reserve: Optional[str] = None) -> None:
     if not await owner_only(interaction):
         return
+    if reserve is not None:
+        try:
+            amount, source = stocks.parse_amount(reserve), "reserve option"
+        except ValueError:
+            await interaction.response.send_message(
+                f"Couldn't read {reserve!r} as an amount — try 38m, 500k or 38000000.", ephemeral=True)
+            return
+    else:
+        amount, source = STOCKS_RESERVE, "STOCKS_RESERVE"
     await interaction.response.defer(thinking=True)
     try:
         await market.refresh(http, details=False)
     except Exception as exc:
         log.error("Stock market refresh failed: %s", exc)
-    embeds = [discord.Embed.from_dict(e) for e in market.report_embeds(tracker.cash)]
+    embeds = [discord.Embed.from_dict(e) for e in market.report_embeds(tracker.cash, amount, source)]
     await interaction.followup.send(embeds=embeds)
 
 
