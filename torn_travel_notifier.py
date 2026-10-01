@@ -242,11 +242,21 @@ async def item_autocomplete(interaction: discord.Interaction, current: str) -> l
     return [app_commands.Choice(name=n, value=n) for n in names[:25]]
 
 
-@app_commands.describe(item="Item to sell", qty="How many (default: your travel capacity)")
+@app_commands.describe(item="One item in detail (default: every item in /travel, grouped by method)",
+                       qty="How many, for the single-item view (default: your travel capacity)")
 @app_commands.autocomplete(item=item_autocomplete)
-async def sell_command(interaction: discord.Interaction, item: str,
+async def sell_command(interaction: discord.Interaction, item: Optional[str] = None,
                        qty: Optional[app_commands.Range[int, 1, 100000]] = None) -> None:
     if not await owner_only(interaction):
+        return
+    if item is None:
+        await interaction.response.defer(thinking=True)
+        try:
+            await tracker.refresh(http)
+        except Exception as exc:
+            log.error("Stock refresh failed: %s", exc)
+        embeds = [discord.Embed.from_dict(e) for e in tracker.bulk_sell_embeds()]
+        await interaction.followup.send(embeds=embeds)
         return
     item_id = tracker.item_names().get(item)
     if item_id is None:
@@ -267,7 +277,8 @@ COMMANDS = [
     (["travel", "t"], "Best items to buy abroad, with stock predicted at landing", travel_command),
     (["travel-restock", "trs"], "Stock and restock times where you are (or a chosen country)",
      restock_command),
-    (["sell"], "Best place to sell an item: TornExchange traders vs item market", sell_command),
+    (["sell"], "Best place to sell: every /travel item grouped by method, or one item in detail",
+     sell_command),
 ]
 for names, description, callback in COMMANDS:
     for name in names:

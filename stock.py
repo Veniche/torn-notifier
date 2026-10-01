@@ -409,11 +409,8 @@ class StockTracker:
             return [{"title": "Travel stock", "description": "No stock data yet — try again in a minute."}]
         oldest = min(c.get("update", 0) for c in self.latest.values())
         age_min = max(int((time.time() - oldest) / 60), 0)
-        groups = self.rows()
         embeds = []
-        for group, title in GROUPS:
-            rows = groups[group]
-            shown = [r for r in rows if r.buy > 0][:TOP_PER_GROUP]
+        for (group, title), (shown, gone) in zip(GROUPS, self._report_selection()):
             lines = []
             for r in shown:
                 if r.at_landing is None:
@@ -427,11 +424,6 @@ class StockTracker:
                 if self.cash is not None and self.cash < r.load_cost:
                     line += f"\n💸 costs {money(r.load_cost)} — bring {money(r.load_cost - self.cash)} more cash"
                 lines.append(line)
-            # Out-of-stock items worth knowing about: ones that would have made
-            # the list if they were in stock.
-            cutoff = shown[-1].per_hour if len(shown) == TOP_PER_GROUP else 0
-            gone = sorted((r for r in rows if r.buy == 0 and r.potential_hour > cutoff),
-                          key=lambda r: r.potential_hour, reverse=True)[:5]
             if gone:
                 names = ", ".join(f"{r.item} ({r.country.split(' ', 1)[1]}{self._restock_hint(r)})"
                                   for r in gone)
@@ -439,6 +431,21 @@ class StockTracker:
             embeds.append({"title": title, "description": "\n".join(lines) or "Nothing profitable."})
         embeds[-1]["footer"] = {"text": self._footer(age_min)}
         return embeds
+
+    def _report_selection(self) -> list[tuple[list[Row], list[Row]]]:
+        """Per group: (rows shown in the report, sold-out rows named under them)."""
+        groups = self.rows()
+        selection = []
+        for group, _ in GROUPS:
+            rows = groups[group]
+            shown = [r for r in rows if r.buy > 0][:TOP_PER_GROUP]
+            # Out-of-stock items worth knowing about: ones that would have made
+            # the list if they were in stock.
+            cutoff = shown[-1].per_hour if len(shown) == TOP_PER_GROUP else 0
+            gone = sorted((r for r in rows if r.buy == 0 and r.potential_hour > cutoff),
+                          key=lambda r: r.potential_hour, reverse=True)[:5]
+            selection.append((shown, gone))
+        return selection
 
     def _restock_hint(self, r: Row) -> str:
         if r.now > 0:
@@ -514,3 +521,37 @@ class StockTracker:
         if not self.te_prices:
             lines.append("_No TornExchange traders configured — only the item market is compared._")
         return {"title": f"Where to sell {name}", "description": "\n".join(lines)}
+
+    def bulk_sell_embeds(self) -> list[dict]:
+        """Where to sell each item in the travel report, grouped by best method."""
+        if not self.latest or not self.items:
+            return [{"title": "Where to sell", "description": "No stock data yet — try again in a minute."}]
+        item_ids: list[int] = []
+        for shown, gone in self._report_selection():
+            for r in shown + gone:
+                item_id = int(r.key.split(":")[1])
+                if item_id not in item_ids:
+                    item_ids.append(item_id)
+        by_method: dict[str, list[tuple[int, str]]] = {}
+        for item_id in item_ids:
+            options = self.sale_options(item_id)
+            net, where, _ = options[0]
+            name = TYPE_ICONS.get(self.items[item_id]["type"], "") + self.items[item_id]["name"]
+            if len(options) > 1:
+                runner_net, runner, _ = options[1]
+                lead = f" · +${net - runner_net:,} vs {self._via(runner)}"
+            else:
+                lead = ""
+            # * = the market side of this comparison is still Torn's average price
+            estimate = "*" if item_id not in self.listings else ""
+            by_method.setdefault(where, []).append((net, f"**{name}** — ${net:,}{lead}{estimate}"))
+        embeds = []
+        # Traders first, then the item market; within each, priciest first.
+        for where in sorted(by_method, key=lambda w: (w == "item market", w)):
+            lines = [line for _, line in sorted(by_method[where], reverse=True)]
+            embeds.append({"title": f"Sell to {self._via(where)} ({len(lines)})", "description": "\n".join(lines)})
+        unchecked = sum(1 for i in item_ids if i not in self.listings)
+        note = (f" · *market price estimated, listing not checked yet ({unchecked})" if unchecked else "")
+        embeds[-1]["footer"] = {"text": f"Per unit, net of {self.market_fee:.0%} market fee and "
+                                        f"${self.market_undercut:,} undercut · items from /travel{note}"}
+        return embeds

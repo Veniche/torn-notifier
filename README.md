@@ -16,7 +16,8 @@ the bot's DMs give you the same report and more on demand — see
 |---|---|---|
 | `/travel` | `/t` | Foreign stock report: best items to buy abroad, grouped by trip length, with stock predicted at landing, profit per trip and per hour, and where to sell each. |
 | `/travel-restock [country]` | `/trs` | Stock, sell-out and restock estimates for the country you're in or flying to, or the `country` you pick. |
-| `/sell item:<name> [qty]` | — | Ranks every way to sell an item (each TornExchange trader vs the item market after undercut and fee), for `qty` units (default: your travel capacity). Item names autocomplete. |
+| `/sell` | — | Every item in the `/travel` report, grouped by where it sells best (🤝 each trader / 🏪 item market), with the net price per unit and how far ahead of the next-best method it is. |
+| `/sell item:<name> [qty]` | — | One item in detail: every way to sell it, for `qty` units (default: your travel capacity). Checks its live lowest listing. Item names autocomplete. |
 
 Discord has no real aliases, so each alias is its own entry in the `/`
 menu. Commands only answer the user in `DISCORD_USER_ID`; anyone else gets
@@ -172,7 +173,11 @@ restock estimate when there is one.
 
 ## Where to sell (`/sell`)
 
-Ranks every way to sell an item — each configured trader's buy price and
+With no item, lists everything in the `/travel` report grouped by best
+sale method, per unit (quantity only multiplies, so it doesn't change the
+winner). A `*` means that item's market price is still Torn's average
+because its lowest listing hasn't been checked yet. With `item`, it ranks
+every way to sell that item — each configured trader's buy price and
 the item market after your undercut and the sales fee — with the total
 for a full load (or `qty`). It checks the live lowest listing for that
 item. In the background, the bot also checks lowest listings for the
