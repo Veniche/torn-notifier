@@ -49,6 +49,8 @@ TE_CACHE_SECONDS = 30 * 60
 # refreshed on rotation: this many per stock refresh, each kept this long.
 LISTINGS_PER_REFRESH = 20
 LISTING_CACHE_SECONDS = 30 * 60
+# Saved listings older than this are dropped rather than trusted.
+LISTING_KEEP_SECONDS = 24 * 3600
 
 # Restock cycles (sold out -> restocked) kept for estimating restock delays.
 CYCLE_HISTORY_SECONDS = 7 * 24 * 3600
@@ -172,13 +174,15 @@ class StockTracker:
         self.method = state.get("method", self.method)
         self.cycles = state.get("cycles", {})
         self.empty_since = state.get("empty_since", {})
+        # JSON keys are strings; listings are keyed by item id.
+        self.listings = {int(k): v for k, v in state.get("listings", {}).items()}
 
     def _save(self) -> None:
         tmp = self.state_path + ".tmp"
         with open(tmp, "w") as f:
             json.dump({"history": self.history, "flight_seconds": self.flight_seconds,
                        "method": self.method, "cycles": self.cycles,
-                       "empty_since": self.empty_since}, f)
+                       "empty_since": self.empty_since, "listings": self.listings}, f)
         os.replace(tmp, self.state_path)
 
     # --- inputs ----------------------------------------------------------
@@ -284,6 +288,12 @@ class StockTracker:
             except Exception as exc:
                 log.error("Listing fetch for item %s failed: %s", item_id, exc)
                 break  # likely rate-limited or offline; try again next refresh
+        cutoff = now - LISTING_KEEP_SECONDS
+        self.listings = {i: l for i, l in self.listings.items() if l[1] >= cutoff}
+        self._save()
+
+    def save(self) -> None:
+        self._save()
 
     async def fetch_listing(self, session: aiohttp.ClientSession, item_id: int) -> None:
         url = TORN_LISTINGS_URL.format(item_id=item_id)

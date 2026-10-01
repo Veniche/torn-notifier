@@ -265,6 +265,7 @@ async def sell_command(interaction: discord.Interaction, item: Optional[str] = N
     await interaction.response.defer(thinking=True)
     try:  # always check the live lowest listing for the item asked about
         await tracker.fetch_listing(http, item_id)
+        tracker.save()
     except Exception as exc:
         log.error("Listing fetch for %s failed: %s", item, exc)
     embed = tracker.sell_embed(item_id, qty or TRAVEL_CAPACITY)

@@ -154,8 +154,8 @@ bottom of each group. For each item it shows:
 
 Flight times start from Torn's standard table for your travel method and
 switch to your real flight times once the bot has seen you fly there.
-Snapshots and flight times are kept in `state.json` so restarts don't lose
-them. Plushies and flowers sell easily; for less-traded items (e.g. Raw
+Snapshots, flight times, restock cycles and checked listing prices are
+kept in `state.json` so restarts don't lose them. Plushies and flowers sell easily; for less-traded items (e.g. Raw
 Ivory, Tiger Bone Powder) check the item market before buying a full load
 if you plan to list rather than sell to a trader.
 
