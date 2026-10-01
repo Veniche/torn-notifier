@@ -24,6 +24,7 @@ import discord
 from discord import app_commands
 from dotenv import load_dotenv
 
+import spending
 import stock
 import stocks
 
@@ -75,6 +76,23 @@ def item_value(name: str) -> int | None:
 
 
 market = stocks.StockMarket(TORN_API_KEY, item_value)
+
+
+def item_buy_price(name: str) -> tuple[int, str] | None:
+    """(what one unit costs to buy now, proper name): lowest listing, else market value."""
+    item_id = {n.lower(): i for n, i in tracker.item_names().items()}.get(name.strip().lower())
+    if item_id is None:
+        return None
+    listing = tracker.listings.get(item_id)
+    price = listing[0] if listing else tracker.items[item_id]["market_value"]
+    return price, tracker.items[item_id]["name"]
+
+
+# Days-left values (Torn's count) at which to DM about a rented property's
+# lease ending, e.g. "1" or "1,2".
+RENT_ALERT_DAYS = [int(d) for d in (os.getenv("RENT_ALERT_DAYS") or "1").split(",") if d.strip()]
+SPENDING_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "spending.json")
+spend = spending.Spending(SPENDING_PATH, TORN_API_KEY, item_buy_price)
 
 # Arrival timestamp we've already scheduled an alert for, so a repeat
 # poll of the same trip doesn't schedule a second alert.
@@ -215,6 +233,12 @@ async def stock_loop() -> None:
                               f"Collect it on the stock market page.")
         except Exception as exc:
             log.error("Stock market refresh failed: %s", exc)
+        try:
+            await spend.refresh(http)
+            for message in spend.due_rent_alerts(RENT_ALERT_DAYS):
+                await send_dm(message)
+        except Exception as exc:
+            log.error("Rent check failed: %s", exc)
         await asyncio.sleep(STOCK_POLL_SECONDS)
 
 
@@ -290,23 +314,90 @@ async def sell_command(interaction: discord.Interaction, item: Optional[str] = N
     await interaction.followup.send(embed=discord.Embed.from_dict(embed))
 
 
-@app_commands.describe(reserve="Cash to keep ready (rent, upkeep, Xanax...), e.g. 38m — default none")
+@app_commands.describe(reserve="Cash to keep ready: an amount like 38m, or auto (= /spend total) — default none")
 async def stocks_command(interaction: discord.Interaction, reserve: Optional[str] = None) -> None:
     if not await owner_only(interaction):
         return
+    auto = bool(reserve) and reserve.strip().lower() == "auto"
     try:
-        amount = stocks.parse_amount(reserve) if reserve else 0
+        amount = stocks.parse_amount(reserve) if reserve and not auto else 0
     except ValueError:
         await interaction.response.send_message(
-            f"Couldn't read {reserve!r} as an amount — try 38m, 500k or 38000000.", ephemeral=True)
+            f"Couldn't read {reserve!r} — try 38m, 500k, 38000000 or auto.", ephemeral=True)
         return
     await interaction.response.defer(thinking=True)
+    if auto:
+        days = await spending_horizon()
+        amount = spend.total(days)
     try:
         await market.refresh(http, details=False)
     except Exception as exc:
         log.error("Stock market refresh failed: %s", exc)
-    embeds = [discord.Embed.from_dict(e) for e in market.report_embeds(tracker.cash, amount)]
+    label = f"auto: /spend total, next {days}d" if auto else ""
+    embeds = [discord.Embed.from_dict(e) for e in market.report_embeds(tracker.cash, amount, label)]
     await interaction.followup.send(embeds=embeds)
+
+
+async def spending_horizon(days: Optional[int] = None) -> int:
+    """Refresh rent/upkeep and item prices; return the horizon (default: until next rent)."""
+    try:
+        await spend.refresh(http, force=True)
+    except Exception as exc:
+        log.error("Properties fetch failed: %s", exc)
+    for name in spend.item_names():
+        item_id = {n.lower(): i for n, i in tracker.item_names().items()}.get(name.lower())
+        if item_id is not None:
+            try:
+                await tracker.fetch_listing(http, item_id)
+            except Exception as exc:
+                log.error("Listing fetch for %s failed: %s", name, exc)
+    return days if days is not None else spend.default_horizon()
+
+
+@app_commands.describe(days="How many days ahead (default: until your next rent)")
+async def spend_command(interaction: discord.Interaction,
+                        days: Optional[app_commands.Range[int, 1, 365]] = None) -> None:
+    if not await owner_only(interaction):
+        return
+    await interaction.response.defer(thinking=True)
+    horizon = await spending_horizon(days)
+    source = f"{days}d chosen" if days else "until next rent"
+    await interaction.followup.send(embed=discord.Embed.from_dict(spend.embed(horizon, source)))
+
+
+@app_commands.describe(name="A label, e.g. xanax", amount="Cash (4m) or items (5 xanax, priced live)",
+                       every="once, daily, weekly, or N days (e.g. 7d)",
+                       due="When it's next due: today, tomorrow, or N days (e.g. 3d) — optional")
+async def spend_add_command(interaction: discord.Interaction, name: str, amount: str, every: str,
+                            due: Optional[str] = None) -> None:
+    if not await owner_only(interaction):
+        return
+    try:
+        spend.add(name.strip(), amount, every, due)
+    except ValueError as exc:
+        await interaction.response.send_message(
+            f"Couldn't add that: {exc}. Amount like `4m` or `5 xanax`; every like `once`, `daily`, `7d`; "
+            f"due like `today`, `3d`.", ephemeral=True)
+        return
+    _, desc = spend.unit_cost(amount)
+    await interaction.response.send_message(
+        f"Added **{name.strip()}**: {desc} {spending.every_text(spending.parse_every(every))}"
+        + (f", next due in {spending.parse_due(due)}d" if due else "") + ".")
+
+
+async def spend_name_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    return [app_commands.Choice(name=n, value=n) for n in spend.entries if current.lower() in n.lower()][:25]
+
+
+@app_commands.describe(name="Entry to remove")
+@app_commands.autocomplete(name=spend_name_autocomplete)
+async def spend_remove_command(interaction: discord.Interaction, name: str) -> None:
+    if not await owner_only(interaction):
+        return
+    if spend.remove(name):
+        await interaction.response.send_message(f"Removed **{name}**.")
+    else:
+        await interaction.response.send_message(f"No entry called {name!r}.", ephemeral=True)
 
 
 # Discord has no command aliases, so each extra name is its own command
@@ -318,6 +409,9 @@ COMMANDS = [
     (["sell"], "Best place to sell: every /travel item grouped by method, or one item in detail",
      sell_command),
     (["stocks"], "Your stocks, dividend blocks you can afford, and the most stable stocks", stocks_command),
+    (["spend"], "What you'll need to pay: rent, upkeep and your entries, until next rent", spend_command),
+    (["spend-add"], "Add or replace a spending entry (cash or items, one-off or repeating)", spend_add_command),
+    (["spend-remove"], "Remove a spending entry", spend_remove_command),
 ]
 for names, description, callback in COMMANDS:
     for name in names:

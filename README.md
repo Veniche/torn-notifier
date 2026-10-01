@@ -17,7 +17,10 @@ the bot's DMs give you the same report and more on demand — see
 | `/travel` | `/t` | Foreign stock report: best items to buy abroad, grouped by trip length, with stock predicted at landing, profit per trip and per hour, and where to sell each. |
 | `/travel-restock [country]` | `/trs` | Stock, sell-out and restock estimates for the country you're in or flying to, or the `country` you pick. |
 | `/sell` | — | Every item in the `/travel` report, grouped by where it sells best (🤝 each trader / 🏪 item market), with the net price per unit and how far ahead of the next-best method it is. |
-| `/stocks [reserve:<amount>]` | — | Your stock holdings (value, monthly swing, block status / days to next dividend), the dividend blocks your free money can afford ranked by yearly yield, and the most stable stocks for money you may need soon. `reserve` is cash to keep ready first (rent, upkeep, Xanax…), e.g. `reserve:38m`; without it nothing is held back. Accepts `38m`, `500k`, `1.2bn` or plain digits. |
+| `/stocks [reserve:<amount>]` | — | Your stock holdings (value, monthly swing, block status / days to next dividend), the dividend blocks your free money can afford ranked by yearly yield, and the most stable stocks for money you may need soon. `reserve` is cash to keep ready first: an amount (`38m`, `500k`, `1.2bn`, plain digits) or `auto` (the `/spend` total until your next rent); without it nothing is held back. |
+| `/spend [days]` | — | What you'll need to pay until your next rent (or the next `days`): rent and upkeep from the Torn API plus your own entries, with a total and per-day average. |
+| `/spend-add name amount every [due]` | — | Add or replace an entry. `amount`: cash (`4m`) or items (`5 xanax`, priced at the lowest listing). `every`: `once`, `daily`, `weekly` or `7d`. `due`: `today`, `tomorrow` or `3d` (optional). |
+| `/spend-remove name` | — | Remove an entry (names autocomplete). |
 | `/sell item:<name> [qty]` | — | One item in detail: every way to sell it, for `qty` units (default: your travel capacity). Checks its live lowest listing. Item names autocomplete. |
 
 Discord has no real aliases, so each alias is its own entry in the `/`
@@ -33,6 +36,7 @@ until then, typing the name just sends a plain message the bot ignores.
 | `ALERT_LEAD_SECONDS` before any landing | 🛬 Landing in ~30s — *destination* |
 | Right after the alert for a landing in Torn | The `/travel` stock report |
 | Drug cooldown reaches 0 | 💊 Drug cooldown is over |
+| A rented property's lease reaches a `RENT_ALERT_DAYS` value | 🏝️ *Property* lease: *N* day(s) left — renewing costs ≈ *last lease cost* |
 | A stock dividend you hold a block for is ready | 💰 *STOCK* dividend ready — *payout* (once per dividend; again after a restart if still uncollected) |
 
 ## 1. Create the Discord bot
@@ -74,6 +78,7 @@ TORN_API_KEY=your-api-key
 # TE_API_KEY=your-tornexchange-api-key
 # ITEM_MARKET_UNDERCUT=10
 # ITEM_MARKET_FEE=5
+# RENT_ALERT_DAYS=1
 # POLL_INTERVAL_SECONDS=60
 ```
 
@@ -121,6 +126,10 @@ journalctl -u torn-notifier -f        # tail logs
 - `ITEM_MARKET_FEE` — Torn's item market sales fee in percent (default 5,
   in effect since June 2025; lower it if a company special reduces it).
   Item market value = (lowest listing − undercut) × (1 − fee).
+- `RENT_ALERT_DAYS` — days-left values (Torn's own count on a rented
+  property) at which to DM you, comma-separated (default `1`). `1,2` also
+  warns the day before. If a lease ends without an alert, Torn may count
+  the last day as 0 — use `0,1`.
 - `STOCK_POLL_SECONDS` — how often stock snapshots are taken (default 300).
 
 Set these in `.env`, then restart the service
@@ -187,6 +196,25 @@ items most likely to be in your reports, 20 at a time on each stock
 refresh (each kept 30 minutes), so the travel report's 🤝/🏪 choice uses
 real listings rather than Torn's average price.
 
+## Spending (`/spend`)
+
+Lists everything due between now and your next rent (or the next `days`),
+with a total — the same number `/stocks reserve:auto` keeps ready.
+
+- 🔄 **From the Torn API:** rent on any property you rent (counted if it
+  renews inside the window, at what the current lease cost) and daily
+  upkeep + staff on properties you use. Nothing to maintain.
+- ✏️ **Your entries:** anything else. Repeating entries with a `due` date
+  are counted for each occurrence in the window (past dates roll forward);
+  without one they're spread evenly (weekly over 21 days = 3×). One-offs
+  count if due inside the window; past ones are flagged for removal. Item
+  amounts are priced at the current lowest listing each time.
+
+Entries are kept in `spending.json` next to the script — git-ignored, only
+on the machine running the bot (the repo is public), and not touched by
+deleting `state.json`. The rent-alert DM is the only automatic message;
+everything else here is on demand.
+
 ## State file
 
 The bot keeps what it learns in `state.json`, next to the script. It's
@@ -200,7 +228,7 @@ hundred KB).
 | `empty_since` | Items currently sold out, and when they sold out | Until they restock | Restock countdowns |
 | `flight_seconds` | Your real one-way flight time per `method:country` | Until replaced by a newer trip | Profit per hour, landing predictions |
 | `method` | Your last travel method (Standard, Airstrip, …) | Until it changes | Which flight times to use |
-| `listings` | Lowest item-market listing per item: `[price, checked at]` | Re-checked after 30 min, dropped after 24 hours | 🤝/🏪 choice in `/travel`, `/sell` |
+| `listings` | Lowest item-market listing per item: `[price, checked at]` | Re-checked after 30 min, dropped after 24 hours | 🤝/🏪 choice in `/travel`, `/sell`; item prices in `/spend` |
 
 It's rewritten on every stock refresh (every `STOCK_POLL_SECONDS`), after
 each batch of listing checks, and after `/sell item:` checks a listing.
@@ -208,7 +236,10 @@ Writes go to `state.json.tmp` first and then replace the file, so a crash
 mid-write can't corrupt it. If the file is unreadable anyway, the bot logs
 it and starts fresh.
 
-Deleting it is safe but costs relearning time: sell-rate trends come back
+Your spending entries and sent rent alerts are in a separate file,
+`spending.json`, which deleting `state.json` doesn't affect.
+
+Deleting `state.json` is safe but costs relearning time: sell-rate trends come back
 after ~20 minutes, listing prices within ~10 minutes, flight times after
 your next trip to each country, and restock history only as items sell
 out and restock again — days for a full picture. Stop the service first
@@ -232,7 +263,7 @@ to predict them. What it measures instead:
   checked yet".
 
 - **Cash to keep ready.** The `reserve` option, given each time you run
-  `/stocks` (none if omitted). "Free" = cash on hand + shares outside
+  `/stocks` (none if omitted); `reserve:auto` uses the `/spend` total. "Free" = cash on hand + shares outside
   dividend blocks − reserve; only free money counts toward affording a
   block.
 

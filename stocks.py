@@ -171,7 +171,7 @@ class StockMarket:
         r = self.month_range(stock_id)
         return "swing not checked yet" if r is None else f"{r:.1%} monthly swing"
 
-    def report_embeds(self, cash: int | None, reserve: int) -> list[dict]:
+    def report_embeds(self, cash: int | None, reserve: int, reserve_label: str = "") -> list[dict]:
         if not self.market:
             return [{"title": "Stocks", "description": "No stock data yet — try again in a minute."}]
         total = sum(h["shares"] * self.market[h["id"]]["market"]["price"] for h in self.holdings)
@@ -205,7 +205,8 @@ class StockMarket:
 
         liquid = self.liquid(cash)
         free = liquid - reserve
-        lines = [f"Keeping **{money(reserve)}** ready" if reserve
+        label = f" ({reserve_label})" if reserve_label else ""
+        lines = [f"Keeping **{money(reserve)}** ready{label}" if reserve or reserve_label
                  else "No reserve set — add `reserve:` (e.g. `reserve:38m`) to keep cash aside",
                  f"Liquid now (cash + shares outside blocks): {money(liquid)} → "
                  + (f"**{money(free)} free** for dividend blocks" if free >= 0
