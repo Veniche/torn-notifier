@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import time
+from typing import Optional
 
 import aiohttp
 import discord
@@ -35,6 +36,9 @@ TRAVEL_CAPACITY = int(os.getenv("TRAVEL_CAPACITY", "5"))
 # Most cash you'll carry abroad; items whose full load costs more are
 # bought only as far as this covers. Unset = no cap.
 TRAVEL_BUDGET = int(os.environ["TRAVEL_BUDGET"]) if os.getenv("TRAVEL_BUDGET") else None
+# Optional: value items at your TornExchange trader's buy prices.
+TE_API_KEY = os.getenv("TE_API_KEY") or None
+TE_TRADER = os.getenv("TE_TRADER") or None
 STOCK_POLL_SECONDS = int(os.getenv("STOCK_POLL_SECONDS", "300"))
 STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
 
@@ -51,7 +55,8 @@ log = logging.getLogger("torn-notifier")
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
-tracker = stock.StockTracker(STATE_PATH, TORN_API_KEY, TRAVEL_CAPACITY, TRAVEL_BUDGET)
+tracker = stock.StockTracker(STATE_PATH, TORN_API_KEY, TRAVEL_CAPACITY, TRAVEL_BUDGET,
+                             TE_API_KEY, TE_TRADER)
 http: aiohttp.ClientSession | None = None
 
 # Arrival timestamp we've already scheduled an alert for, so a repeat
@@ -198,6 +203,30 @@ async def travel_command(interaction: discord.Interaction) -> None:
         return
     await interaction.response.defer(thinking=True)
     await interaction.followup.send(embeds=await fresh_stock_embeds())
+
+
+@tree.command(name="restock", description="Stock and restock times where you are (or a chosen country)")
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+@app_commands.describe(country="Defaults to where you are or are flying to")
+@app_commands.choices(country=[
+    app_commands.Choice(name=name, value=code) for code, (name, _, _) in stock.COUNTRIES.items()
+])
+async def restock_command(interaction: discord.Interaction,
+                          country: Optional[app_commands.Choice[str]] = None) -> None:
+    if interaction.user.id != DISCORD_USER_ID:
+        await interaction.response.send_message("This bot is private.", ephemeral=True)
+        return
+    code = country.value if country else tracker.location_code()
+    if code is None:
+        await interaction.response.send_message(
+            "You're in Torn — pick a country with the `country` option.", ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    try:
+        await tracker.refresh(http)
+    except Exception as exc:
+        log.error("Stock refresh failed: %s", exc)
+    await interaction.followup.send(embed=discord.Embed.from_dict(tracker.restock_embed(code)))
 
 
 async def setup_hook() -> None:

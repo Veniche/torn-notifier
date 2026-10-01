@@ -3,8 +3,10 @@ Foreign stock report: every item abroad you can afford a load of.
 
 Stock comes from YATA's public travel export (crowd-sourced, refreshed by
 players' scripts every few minutes). YATA only gives the current quantity,
-so we keep our own snapshots to estimate how fast each item sells out and
-predict what will be left when you land.
+so we keep our own snapshots to estimate how fast each item sells out,
+predict what will be left when you land, and learn how long items stay
+empty before restocking. Sell prices come from your TornExchange trader's
+buy list when configured, else Torn's market value.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ log = logging.getLogger("torn-notifier")
 YATA_URL = "https://yata.yt/api/v1/travel/export/"
 TORN_ITEMS_URL = "https://api.torn.com/torn/"
 TORN_USER_URL = "https://api.torn.com/user/"
+TE_PRICES_URL = "https://tornexchange.com/api/prices/{trader}"
 USER_AGENT = "torn-notifier (personal bot; github.com/Veniche/torn-notifier)"
 
 TYPE_ICONS = {"Plushie": "🧸 ", "Flower": "🌸 "}
@@ -37,6 +40,14 @@ RATE_WINDOW_SECONDS = 90 * 60
 MIN_RATE_SPAN_SECONDS = 20 * 60
 
 ITEMS_CACHE_SECONDS = 3600
+# TE caches trader price lists for 5 minutes server-side.
+TE_CACHE_SECONDS = 30 * 60
+
+# Restock cycles (sold out -> restocked) kept for estimating restock delays.
+CYCLE_HISTORY_SECONDS = 7 * 24 * 3600
+
+# Items listed per country in /restock.
+TOP_RESTOCK = 10
 
 # YATA country code -> (name, flag, distance group)
 COUNTRIES = {
@@ -82,6 +93,15 @@ class Row:
     load_cost: int  # cost of buying `buy` units
     want: int  # units you'd buy with full stock (capacity, capped by budget)
     potential_hour: int  # profit/hr if `want` units were in stock
+    key: str  # "country:item_id"
+    via_trader: bool  # sell price is the trader's buy price, not market value
+
+
+def duration(seconds: float) -> str:
+    minutes = max(int(seconds // 60), 0)
+    if minutes < 60:
+        return f"{minutes}m"
+    return f"{minutes // 60}h{minutes % 60:02d}m"
 
 
 def money(n: float) -> str:
@@ -95,11 +115,23 @@ def money(n: float) -> str:
 
 
 class StockTracker:
-    def __init__(self, state_path: str, api_key: str, capacity: int, budget: int | None) -> None:
+    def __init__(self, state_path: str, api_key: str, capacity: int, budget: int | None,
+                 te_key: str | None = None, te_trader: str | None = None) -> None:
         self.state_path = state_path
         self.api_key = api_key
         self.capacity = capacity
         self.budget = budget
+        self.te_key = te_key
+        self.te_trader = te_trader
+        # item_id -> trader's buy price; empty until fetched (or no trader set)
+        self.te_prices: dict[int, int] = {}
+        self.te_fetched = 0.0
+        # "country:item_id" -> [[restocked_at, seconds_empty, restock_qty], ...]
+        self.cycles: dict[str, list[list[int]]] = {}
+        # "country:item_id" -> when it was seen selling out (still empty)
+        self.empty_since: dict[str, int] = {}
+        # Latest travel selection, to know where you are for /restock.
+        self.travel: dict = {}
         # "country:item_id" -> [[yata_update_ts, quantity], ...]
         self.history: dict[str, list[list[int]]] = {}
         # "Method:country" -> observed one-way seconds
@@ -126,18 +158,22 @@ class StockTracker:
         self.history = state.get("history", {})
         self.flight_seconds = state.get("flight_seconds", {})
         self.method = state.get("method", self.method)
+        self.cycles = state.get("cycles", {})
+        self.empty_since = state.get("empty_since", {})
 
     def _save(self) -> None:
         tmp = self.state_path + ".tmp"
         with open(tmp, "w") as f:
             json.dump({"history": self.history, "flight_seconds": self.flight_seconds,
-                       "method": self.method}, f)
+                       "method": self.method, "cycles": self.cycles,
+                       "empty_since": self.empty_since}, f)
         os.replace(tmp, self.state_path)
 
     # --- inputs ----------------------------------------------------------
 
     def note_travel(self, travel: dict) -> None:
         """Learn travel method and real flight times from the travel selection."""
+        self.travel = travel
         method = travel.get("method")
         if method in BASE_MINUTES and method != self.method:
             self.method = method
@@ -157,17 +193,25 @@ class StockTracker:
             data = await resp.json(content_type=None)
         self.latest = data.get("stocks", {})
 
-        cutoff = int(time.time()) - HISTORY_SECONDS
+        now = int(time.time())
+        cutoff = now - HISTORY_SECONDS
         for code, country in self.latest.items():
             ts = country.get("update", 0)
             for item in country.get("stocks", []):
-                points = self.history.setdefault(f"{code}:{item['id']}", [])
+                key = f"{code}:{item['id']}"
+                points = self.history.setdefault(key, [])
                 if not points or points[-1][0] != ts:
+                    if points:
+                        self._note_cycle(key, points[-1], [ts, item["quantity"]])
                     points.append([ts, item["quantity"]])
         for key in list(self.history):
             self.history[key] = [p for p in self.history[key] if p[0] >= cutoff]
             if not self.history[key]:
                 del self.history[key]
+        for key in list(self.cycles):
+            self.cycles[key] = [c for c in self.cycles[key] if c[0] >= now - CYCLE_HISTORY_SECONDS]
+            if not self.cycles[key]:
+                del self.cycles[key]
         self._save()
 
         # Only cash on hand counts: vault and bank money can't be reached abroad.
@@ -180,6 +224,12 @@ class StockTracker:
             log.error("Cash check failed: %s", exc)
             self.cash = None
 
+        if self.te_key and self.te_trader and time.time() - self.te_fetched > TE_CACHE_SECONDS:
+            try:
+                await self._fetch_te_prices(session)
+            except Exception as exc:  # keep using the last list, or market value
+                log.error("TornExchange price fetch failed: %s", exc)
+
         if time.time() - self.items_fetched > ITEMS_CACHE_SECONDS:
             params = {"selections": "items", "key": self.api_key}
             async with session.get(TORN_ITEMS_URL, params=params, timeout=30) as resp:
@@ -188,7 +238,50 @@ class StockTracker:
                 self.items = {int(k): v for k, v in items.items() if v.get("market_value")}
                 self.items_fetched = time.time()
 
+    async def _fetch_te_prices(self, session: aiohttp.ClientSession) -> None:
+        url = TE_PRICES_URL.format(trader=self.te_trader)
+        params = {"key": self.te_key}
+        headers = {"User-Agent": USER_AGENT}
+        async with session.get(url, params=params, headers=headers, timeout=20) as resp:
+            data = await resp.json(content_type=None)
+        items = (data.get("data") or {}).get("items")
+        if data.get("status") != "success" or not items:
+            raise ValueError(f"unexpected response: {str(data)[:200]}")
+        self.te_prices = {int(i["item_id"]): int(i["price"]) for i in items if i.get("price")}
+        self.te_fetched = time.time()
+        log.info("Loaded %d buy prices from TE trader %s", len(self.te_prices), self.te_trader)
+
+    def _note_cycle(self, key: str, prev: list[int], cur: list[int]) -> None:
+        """Record sell-outs and restocks between two consecutive snapshots."""
+        # The change happened somewhere between the two snapshots.
+        mid = (prev[0] + cur[0]) // 2
+        if prev[1] > 0 and cur[1] == 0:
+            self.empty_since[key] = mid
+        elif prev[1] == 0 and cur[1] > 0:
+            started = self.empty_since.pop(key, None)
+            if started is not None:
+                self.cycles.setdefault(key, []).append([mid, mid - started, cur[1]])
+
     # --- prediction ------------------------------------------------------
+
+    def sell_price(self, item_id: int) -> tuple[int, bool]:
+        """(price you'd sell at, whether it's the trader's price)."""
+        if item_id in self.te_prices:
+            return self.te_prices[item_id], True
+        return self.items[item_id]["market_value"], False
+
+    def restock_estimate(self, key: str) -> tuple[int | None, int, int | None]:
+        """(seconds until restock or None, cycles seen, typical restock qty)."""
+        cycles = self.cycles.get(key, [])
+        if not cycles:
+            return None, 0, None
+        delays = sorted(c[1] for c in cycles)
+        typical_delay = delays[len(delays) // 2]
+        typical_qty = sorted(c[2] for c in cycles)[len(cycles) // 2]
+        started = self.empty_since.get(key)
+        if started is None:
+            return None, len(cycles), typical_qty
+        return started + typical_delay - int(time.time()), len(cycles), typical_qty
 
     def one_way_seconds(self, code: str) -> int:
         observed = self.flight_seconds.get(f"{self.method}:{code}")
@@ -217,7 +310,8 @@ class StockTracker:
                 info = self.items.get(item["id"])
                 if not info:
                     continue
-                margin = info["market_value"] - item["cost"]
+                price, via_trader = self.sell_price(item["id"])
+                margin = price - item["cost"]
                 want = self.capacity
                 if self.budget is not None and item["cost"] > 0:
                     want = min(want, self.budget // item["cost"])
@@ -235,6 +329,7 @@ class StockTracker:
                     f"{flag} {name}", TYPE_ICONS.get(info["type"], "") + item["name"],
                     item["quantity"], at_landing, buy, per_trip, int(per_trip / round_trip_hours),
                     buy * item["cost"], want, int(want * margin / round_trip_hours),
+                    f"{code}:{item['id']}", via_trader,
                 ))
         for rows in groups.values():
             rows.sort(key=lambda r: r.per_hour, reverse=True)
@@ -258,7 +353,8 @@ class StockTracker:
                     status = f"⚠️ {r.now:,} now → ~{r.at_landing:,} at landing"
                 else:
                     status = f"✅ {r.now:,} now → ~{r.at_landing:,} at landing"
-                line = (f"**{r.item}** · {r.country}\n{status} · "
+                market_only = "" if r.via_trader or not self.te_prices else " · 🏪 market only"
+                line = (f"**{r.item}** · {r.country}{market_only}\n{status} · "
                         f"{money(r.per_trip)}/trip · **{money(r.per_hour)}/hr**")
                 if self.cash is not None and self.cash < r.load_cost:
                     line += f"\n💸 costs {money(r.load_cost)} — bring {money(r.load_cost - self.cash)} more cash"
@@ -269,13 +365,60 @@ class StockTracker:
             gone = sorted((r for r in rows if r.buy == 0 and r.potential_hour > cutoff),
                           key=lambda r: r.potential_hour, reverse=True)[:5]
             if gone:
-                names = ", ".join(f"{r.item} ({r.country.split(' ', 1)[1]})" for r in gone)
+                names = ", ".join(f"{r.item} ({r.country.split(' ', 1)[1]}{self._restock_hint(r)})"
+                                  for r in gone)
                 lines.append(f"❌ Out / sold out by landing: {names}")
             embeds.append({"title": title, "description": "\n".join(lines) or "Nothing profitable."})
-        cash = "cash unknown" if self.cash is None else f"{money(self.cash)} on hand"
-        embeds[-1]["footer"] = {
-            "text": f"{self.method} · {self.capacity} items/trip · "
-                    f"{'no budget cap' if self.budget is None else money(self.budget) + ' budget'} · {cash} · "
-                    f"stock data up to {age_min} min old (YATA)"
-        }
+        embeds[-1]["footer"] = {"text": self._footer(age_min)}
         return embeds
+
+    def _restock_hint(self, r: Row) -> str:
+        if r.now > 0:
+            return ""
+        eta, _, _ = self.restock_estimate(r.key)
+        if eta is None:
+            return ""
+        return ", restock due now" if eta <= 0 else f", restock ~{duration(eta)}"
+
+    def _footer(self, age_min: int) -> str:
+        cash = "cash unknown" if self.cash is None else f"{money(self.cash)} on hand"
+        prices = f"selling to {self.te_trader}" if self.te_prices else "market value"
+        return (f"{self.method} · {self.capacity} items/trip · "
+                f"{'no budget cap' if self.budget is None else money(self.budget) + ' budget'} · "
+                f"{cash} · {prices} · stock data up to {age_min} min old (YATA)")
+
+    def location_code(self) -> str | None:
+        """Country you're in or flying to, from the last travel poll."""
+        return CODE_BY_NAME.get(self.travel.get("destination", ""))
+
+    def restock_embed(self, code: str) -> dict:
+        name, flag, _ = COUNTRIES[code]
+        country = self.latest.get(code)
+        if not country or not self.items:
+            return {"title": f"{flag} {name}", "description": "No stock data yet — try again in a minute."}
+        rows = [r for r in self.rows()[COUNTRIES[code][2]] if r.key.startswith(code + ":")]
+        # Rank by what a full load would earn, so empty items still show.
+        rows.sort(key=lambda r: r.potential_hour, reverse=True)
+        lines = []
+        for r in rows[:TOP_RESTOCK]:
+            eta, seen, qty = self.restock_estimate(r.key)
+            if r.now > 0:
+                rate = self.sell_rate(r.key)
+                if rate:
+                    status = f"✅ {r.now:,} now · sells out in ~{duration(r.now / rate)}"
+                else:
+                    status = f"✅ {r.now:,} now · no trend yet"
+            elif eta is None:
+                status = "❌ out · no restock history yet" if seen == 0 else \
+                    f"❌ out · sold out before tracking started ({seen} cycles seen)"
+            elif eta <= 0:
+                status = f"❌ out · restock due any minute (overdue {duration(-eta)})"
+            else:
+                status = f"❌ out · restock in ~{duration(eta)}"
+            if r.now == 0 and qty:
+                status += f" · usually +{qty:,} · {seen} cycle{'s' if seen != 1 else ''}"
+            lines.append(f"**{r.item}** · {money(r.potential_hour)}/hr at full load\n{status}")
+        age_min = max(int((time.time() - country.get("update", 0)) / 60), 0)
+        return {"title": f"{flag} {name} — restock watch",
+                "description": "\n".join(lines) or "Nothing profitable here.",
+                "footer": {"text": self._footer(age_min)}}
