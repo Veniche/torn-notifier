@@ -17,7 +17,7 @@ the bot's DMs give you the same report and more on demand — see
 | `/travel` | `/t` | Foreign stock report: best items to buy abroad, grouped by trip length, with stock predicted at landing, profit per trip and per hour, and where to sell each. |
 | `/travel-restock [country]` | `/trs` | Stock, sell-out and restock estimates for the country you're in or flying to, or the `country` you pick. |
 | `/sell` | — | Every item in the `/travel` report, grouped by where it sells best (🤝 each trader / 🏪 item market), with the net price per unit and how far ahead of the next-best method it is. |
-| `/stocks [reserve]` | — | Your stock holdings (value, monthly swing, block status / days to next dividend), the cash kept ready (`reserve`, e.g. `38m`, or `STOCKS_RESERVE`), the dividend blocks your free money can afford ranked by yearly yield, and the most stable stocks for money you may need soon. |
+| `/stocks [reserve:<amount>]` | — | Your stock holdings (value, monthly swing, block status / days to next dividend), the dividend blocks your free money can afford ranked by yearly yield, and the most stable stocks for money you may need soon. `reserve` is cash to keep ready first (rent, upkeep, Xanax…), e.g. `reserve:38m`; without it nothing is held back. Accepts `38m`, `500k`, `1.2bn` or plain digits. |
 | `/sell item:<name> [qty]` | — | One item in detail: every way to sell it, for `qty` units (default: your travel capacity). Checks its live lowest listing. Item names autocomplete. |
 
 Discord has no real aliases, so each alias is its own entry in the `/`
@@ -74,7 +74,6 @@ TORN_API_KEY=your-api-key
 # TE_API_KEY=your-tornexchange-api-key
 # ITEM_MARKET_UNDERCUT=10
 # ITEM_MARKET_FEE=5
-# STOCKS_RESERVE=38m
 # POLL_INTERVAL_SECONDS=60
 ```
 
@@ -122,10 +121,6 @@ journalctl -u torn-notifier -f        # tail logs
 - `ITEM_MARKET_FEE` — Torn's item market sales fee in percent (default 5,
   in effect since June 2025; lower it if a company special reduces it).
   Item market value = (lowest listing − undercut) × (1 − fee).
-- `STOCKS_RESERVE` — all the cash `/stocks` keeps ready before counting
-  money toward dividend blocks: rent, upkeep, Xanax, anything else
-  (default 0). Accepts `38m`, `500k`, `1.2bn` or plain digits. Override it
-  for one check with `/stocks reserve:8m`.
 - `STOCK_POLL_SECONDS` — how often stock snapshots are taken (default 300).
 
 Set these in `.env`, then restart the service
@@ -236,11 +231,10 @@ to predict them. What it measures instead:
   refresh and kept 6 hours, so right after a restart some show "swing not
   checked yet".
 
-- **Cash to keep ready.** One amount you set: `STOCKS_RESERVE`, or the
-  `reserve` option for a single check. "Free" = cash on hand + shares
-  outside dividend blocks − that reserve; only free money counts toward
-  affording a block. It doesn't change by itself — lower it after paying a
-  big bill like rent, or check with `reserve:` first.
+- **Cash to keep ready.** The `reserve` option, given each time you run
+  `/stocks` (none if omitted). "Free" = cash on hand + shares outside
+  dividend blocks − reserve; only free money counts toward affording a
+  block.
 
 The dividend-ready DM checks your holdings on every stock refresh. Ready
 dividends must still be collected by hand on the stock market page.
