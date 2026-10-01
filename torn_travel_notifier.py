@@ -74,7 +74,9 @@ def item_value(name: str) -> int | None:
     return tracker.best_sale(item_id)[0] if item_id is not None else None
 
 
-market = stocks.StockMarket(TORN_API_KEY, item_value)
+# Cash to keep ready on top of rent and upkeep, e.g. Xanax for happy jumps.
+STOCKS_RESERVE = int(os.getenv("STOCKS_RESERVE", "0"))
+market = stocks.StockMarket(TORN_API_KEY, item_value, STOCKS_RESERVE)
 
 # Arrival timestamp we've already scheduled an alert for, so a repeat
 # poll of the same trip doesn't schedule a second alert.

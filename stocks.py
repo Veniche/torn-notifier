@@ -21,6 +21,8 @@ log = logging.getLogger("torn-notifier")
 TORN_STOCKS_URL = "https://api.torn.com/v2/torn/stocks"
 TORN_STOCK_URL = "https://api.torn.com/v2/torn/{stock_id}/stocks"
 USER_STOCKS_URL = "https://api.torn.com/v2/user/stocks"
+USER_PROPERTIES_URL = "https://api.torn.com/v2/user/properties"
+USER_BASIC_URL = "https://api.torn.com/v2/user/basic"
 TORN_STATS_URL = "https://api.torn.com/torn/"
 
 MARKET_CACHE_SECONDS = 10 * 60
@@ -28,6 +30,7 @@ MARKET_CACHE_SECONDS = 10 * 60
 DETAILS_PER_REFRESH = 6
 DETAILS_CACHE_SECONDS = 6 * 3600
 POINTS_CACHE_SECONDS = 3600
+PROPERTIES_CACHE_SECONDS = 30 * 60
 
 TOP_BLOCKS = 8
 TOP_STABLE = 5
@@ -46,10 +49,18 @@ def money(n: float) -> str:
 
 
 class StockMarket:
-    def __init__(self, api_key: str, item_value: Callable[[str], int | None]) -> None:
-        """`item_value(name)` returns what one unit of an item nets you, or None."""
+    def __init__(self, api_key: str, item_value: Callable[[str], int | None], extra_reserve: int = 0) -> None:
+        """`item_value(name)` returns what one unit of an item nets you, or None.
+
+        `extra_reserve` is cash to keep ready on top of rent and upkeep
+        (e.g. Xanax for happy jumps).
+        """
         self.api_key = api_key
         self.item_value = item_value
+        self.extra_reserve = extra_reserve
+        self.player_id: int | None = None
+        self.properties: list[dict] = []
+        self.properties_fetched = 0.0
         self.market: dict[int, dict] = {}  # stock id -> TornStock
         self.market_fetched = 0.0
         self.details: dict[int, list] = {}  # stock id -> [performance, fetched_at]
@@ -82,6 +93,15 @@ class StockMarket:
                 log.error("Points price fetch failed: %s", exc)
 
         self.holdings = (await self._get(session, USER_STOCKS_URL))["stocks"]
+
+        if time.time() - self.properties_fetched > PROPERTIES_CACHE_SECONDS:
+            try:
+                if self.player_id is None:
+                    self.player_id = (await self._get(session, USER_BASIC_URL))["profile"]["id"]
+                self.properties = (await self._get(session, USER_PROPERTIES_URL))["properties"]
+                self.properties_fetched = time.time()
+            except Exception as exc:
+                log.error("Properties fetch failed: %s", exc)
 
         if details:
             stale = sorted(self.market, key=lambda i: self.details.get(i, [None, 0])[1])
@@ -147,6 +167,33 @@ class StockMarket:
         detail = self.details.get(stock_id)
         return detail[0]["last_year"]["change_percentage"] / 100 if detail else None
 
+    def reserve_plan(self) -> dict:
+        """Cash to keep ready: next rent on what you rent, upkeep until then, plus extras."""
+        rent, rent_days, upkeep_per_day = 0, None, 0
+        for p in self.properties:
+            renter = (p.get("rented_by") or {}).get("id")
+            if p.get("status") == "rented" and renter != self.player_id:
+                continue  # yours, rented out: the tenant pays its upkeep
+            upkeep_per_day += p["upkeep"]["property"] + p["upkeep"]["staff"]
+            if renter == self.player_id and p.get("cost"):
+                rent += p["cost"]  # assume renewal costs what this lease did
+                days = p.get("rental_period_remaining")
+                rent_days = days if rent_days is None else min(rent_days, days)
+        upkeep_days = rent_days if rent_days is not None else 30
+        upkeep = upkeep_per_day * upkeep_days
+        return {"rent": rent, "rent_days": rent_days, "upkeep_per_day": upkeep_per_day,
+                "upkeep_days": upkeep_days, "upkeep": upkeep, "extra": self.extra_reserve,
+                "total": rent + upkeep + self.extra_reserve}
+
+    def liquid(self, cash: int | None) -> float:
+        """Cash on hand plus shares you could sell without breaking a block."""
+        total = cash or 0
+        for h in self.holdings:
+            s = self.market[h["id"]]
+            locked = s["bonus"]["requirement"] if h["bonus"]["increment"] > 0 and not s["bonus"]["passive"] else 0
+            total += max(h["shares"] - locked, 0) * s["market"]["price"]
+        return total
+
     # --- report ----------------------------------------------------------
 
     def _swing(self, stock_id: int) -> str:
@@ -185,6 +232,21 @@ class StockMarket:
         holdings = {"title": f"📈 Your stocks — {money(total)}{cash_text}",
                     "description": "\n".join(lines) or "You don't hold any stocks."}
 
+        plan = self.reserve_plan()
+        liquid = self.liquid(cash)
+        free = liquid - plan["total"]
+        parts = []
+        if plan["rent"]:
+            parts.append(f"rent {money(plan['rent'])} due in {plan['rent_days']}d")
+        parts.append(f"upkeep {money(plan['upkeep_per_day'])}/day × {plan['upkeep_days']}d = {money(plan['upkeep'])}")
+        if plan["extra"]:
+            parts.append(f"extra {money(plan['extra'])} (STOCKS_RESERVE)")
+        lines = [" + ".join(parts) + f" = **{money(plan['total'])}**",
+                 f"Liquid now (cash + shares outside blocks): {money(liquid)} → "
+                 + (f"**{money(free)} free** for dividend blocks" if free >= 0
+                    else f"⚠️ **{money(-free)} short** of your reserve")]
+        reserve = {"title": "🏝️ Cash to keep ready", "description": "\n".join(lines)}
+
         owned = {h["id"]: h for h in self.holdings}
         blocks = []
         for stock_id, s in self.market.items():
@@ -193,21 +255,21 @@ class StockMarket:
                 continue
             blocks.append((b["yield"], stock_id, b))
         blocks.sort(reverse=True)
-        affordable = [x for x in blocks if x[2]["cost"] <= total][:TOP_BLOCKS]
+        affordable = [x for x in blocks if x[2]["cost"] <= free][:TOP_BLOCKS]
         lines = []
         for yld, stock_id, b in affordable:
             s = self.market[stock_id]
             lines.append(f"**{s['acronym']}** — {s['bonus']['description']} every {s['bonus']['frequency']}d · "
                          f"block {money(b['cost'])} · **{yld:.0%}/yr** ({money(b['yearly'])}/yr) · "
                          f"{self._swing(stock_id)}")
-        nearest = min((x for x in blocks if x[2]["cost"] > total), key=lambda x: x[2]["cost"], default=None)
+        nearest = min((x for x in blocks if x[2]["cost"] > free), key=lambda x: x[2]["cost"], default=None)
         if nearest:
             yld, stock_id, b = nearest
             s = self.market[stock_id]
             lines.append(f"Next within reach: **{s['acronym']}** — block {money(b['cost'])} "
-                         f"({money(b['cost'] - total)} more) · {yld:.0%}/yr")
-        blocks_embed = {"title": "💰 Dividend blocks your portfolio can afford",
-                        "description": "\n".join(lines) or "No cash/item dividend blocks fit your portfolio yet."}
+                         f"({money(b['cost'] - max(free, 0))} more free money needed) · {yld:.0%}/yr")
+        blocks_embed = {"title": "💰 Dividend blocks you can afford after your reserve",
+                        "description": "\n".join(lines) or "No cash/item dividend blocks fit yet."}
 
         stable = sorted((self.month_range(i), i) for i in self.market if self.month_range(i) is not None)
         lines = []
@@ -221,4 +283,4 @@ class StockMarket:
                         "footer": {"text": (f"Swings checked for {checked}/{len(self.market)} stocks · "
                                             "yields are first block only, items at best sale price · "
                                             "prices aren't predicted")}}
-        return [holdings, blocks_embed, stable_embed]
+        return [holdings, reserve, blocks_embed, stable_embed]
