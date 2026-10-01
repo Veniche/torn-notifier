@@ -1,0 +1,14 @@
+[Unit]
+Description=Torncierge Discord bot
+After=network-online.target
+
+[Service]
+Type=simple
+User=USERNAME
+WorkingDirectory=/home/USERNAME/torncierge
+ExecStart=/home/USERNAME/torncierge/venv/bin/python bot.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

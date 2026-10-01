@@ -16,7 +16,7 @@ from typing import Callable
 
 import aiohttp
 
-log = logging.getLogger("torn-notifier")
+log = logging.getLogger("torncierge")
 
 TORN_STOCKS_URL = "https://api.torn.com/v2/torn/stocks"
 TORN_STOCK_URL = "https://api.torn.com/v2/torn/{stock_id}/stocks"

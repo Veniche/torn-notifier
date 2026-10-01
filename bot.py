@@ -1,5 +1,5 @@
 """
-Torn notifier — Discord DM a few seconds before you land, and when your
+Torncierge — a Torn City helper bot. Discord DM a few seconds before you land, and when your
 drug cooldown ends. When you're about to land back in Torn it also sends a
 foreign stock report for your next trip (or run /travel any time). /sell
 compares TornExchange traders with the item market for any item. /stocks
@@ -25,8 +25,8 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 import spending
-import stock
-import stocks
+import market
+import travel
 
 load_dotenv()
 
@@ -59,12 +59,12 @@ COOLDOWN_TOLERANCE_SECONDS = 60
 TORN_API_URL = "https://api.torn.com/user/"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("torn-notifier")
+log = logging.getLogger("torncierge")
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
-tracker = stock.StockTracker(STATE_PATH, TORN_API_KEY, TRAVEL_CAPACITY, TRAVEL_BUDGET,
+tracker = travel.StockTracker(STATE_PATH, TORN_API_KEY, TRAVEL_CAPACITY, TRAVEL_BUDGET,
                              TE_API_KEY, TE_TRADERS, ITEM_MARKET_UNDERCUT, ITEM_MARKET_FEE)
 http: aiohttp.ClientSession | None = None
 
@@ -75,7 +75,7 @@ def item_value(name: str) -> int | None:
     return tracker.best_sale(item_id)[0] if item_id is not None else None
 
 
-market = stocks.StockMarket(TORN_API_KEY, item_value)
+stock_market = market.StockMarket(TORN_API_KEY, item_value)
 
 
 def item_buy_price(name: str) -> tuple[int, str] | None:
@@ -227,8 +227,8 @@ async def stock_loop() -> None:
         except Exception as exc:
             log.error("Stock refresh failed: %s", exc)
         try:
-            for holding in await market.refresh(http):
-                s = market.market[holding["id"]]
+            for holding in await stock_market.refresh(http):
+                s = stock_market.market[holding["id"]]
                 await send_dm(f"💰 {s['acronym']} dividend ready — {s['bonus']['description']}. "
                               f"Collect it on the stock market page.")
         except Exception as exc:
@@ -259,7 +259,7 @@ async def travel_command(interaction: discord.Interaction) -> None:
 
 @app_commands.describe(country="Defaults to where you are or are flying to")
 @app_commands.choices(country=[
-    app_commands.Choice(name=name, value=code) for code, (name, _, _) in stock.COUNTRIES.items()
+    app_commands.Choice(name=name, value=code) for code, (name, _, _) in travel.COUNTRIES.items()
 ])
 async def restock_command(interaction: discord.Interaction,
                           country: Optional[app_commands.Choice[str]] = None) -> None:
@@ -320,7 +320,7 @@ async def stocks_command(interaction: discord.Interaction, reserve: Optional[str
         return
     auto = bool(reserve) and reserve.strip().lower() == "auto"
     try:
-        amount = stocks.parse_amount(reserve) if reserve and not auto else 0
+        amount = market.parse_amount(reserve) if reserve and not auto else 0
     except ValueError:
         await interaction.response.send_message(
             f"Couldn't read {reserve!r} — try 38m, 500k, 38000000 or auto.", ephemeral=True)
@@ -330,11 +330,11 @@ async def stocks_command(interaction: discord.Interaction, reserve: Optional[str
         days = await spending_horizon()
         amount = spend.total(days)
     try:
-        await market.refresh(http, details=False)
+        await stock_market.refresh(http, details=False)
     except Exception as exc:
         log.error("Stock market refresh failed: %s", exc)
     label = f"auto: /spend total, next {days}d" if auto else ""
-    embeds = [discord.Embed.from_dict(e) for e in market.report_embeds(tracker.cash, amount, label)]
+    embeds = [discord.Embed.from_dict(e) for e in stock_market.report_embeds(tracker.cash, amount, label)]
     await interaction.followup.send(embeds=embeds)
 
 

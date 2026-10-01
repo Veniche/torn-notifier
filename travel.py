@@ -20,14 +20,14 @@ from dataclasses import dataclass
 
 import aiohttp
 
-log = logging.getLogger("torn-notifier")
+log = logging.getLogger("torncierge")
 
 YATA_URL = "https://yata.yt/api/v1/travel/export/"
 TORN_ITEMS_URL = "https://api.torn.com/torn/"
 TORN_USER_URL = "https://api.torn.com/user/"
 TE_PRICES_URL = "https://tornexchange.com/api/prices/{trader}"
 TORN_LISTINGS_URL = "https://api.torn.com/v2/market/{item_id}/itemmarket"
-USER_AGENT = "torn-notifier (personal bot; github.com/Veniche/torn-notifier)"
+USER_AGENT = "torncierge (personal bot; github.com/Veniche/torncierge)"
 
 TYPE_ICONS = {"Plushie": "🧸 ", "Flower": "🌸 "}
 

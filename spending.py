@@ -21,9 +21,9 @@ from typing import Callable
 
 import aiohttp
 
-from stocks import money, parse_amount
+from market import money, parse_amount
 
-log = logging.getLogger("torn-notifier")
+log = logging.getLogger("torncierge")
 
 USER_PROPERTIES_URL = "https://api.torn.com/v2/user/properties"
 USER_BASIC_URL = "https://api.torn.com/v2/user/basic"

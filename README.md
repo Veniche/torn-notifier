@@ -1,4 +1,8 @@
-# Torn travel notifier
+# Torncierge
+
+A Discord helper bot for Torn City: travel alerts and trade planning,
+selling, stock-market dividends and spending — growing as new tools are
+added.
 
 DMs you on Discord a few seconds before your flight lands in Torn,
 both abroad and on the way back home, and when your drug cooldown ends.
@@ -86,7 +90,7 @@ TORN_API_KEY=your-api-key
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python torn_travel_notifier.py
+python bot.py
 ```
 
 Start a trip in-game and confirm the DM arrives near landing before
@@ -95,13 +99,13 @@ moving to step 5.
 ## 5. Keep it running (systemd)
 
 ```bash
-# edit torn-notifier.service first — replace every USERNAME with your
+# edit torncierge.service first — replace every USERNAME with your
 # actual user, and make sure the paths match where you cloned this repo
-sudo cp torn-notifier.service /etc/systemd/system/
+sudo cp torncierge.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now torn-notifier
-sudo systemctl status torn-notifier   # confirm it's active
-journalctl -u torn-notifier -f        # tail logs
+sudo systemctl enable --now torncierge
+sudo systemctl status torncierge      # confirm it's active
+journalctl -u torncierge -f           # tail logs
 ```
 
 ## Tuning
@@ -133,7 +137,7 @@ journalctl -u torn-notifier -f        # tail logs
 - `STOCK_POLL_SECONDS` — how often stock snapshots are taken (default 300).
 
 Set these in `.env`, then restart the service
-(`sudo systemctl restart torn-notifier`).
+(`sudo systemctl restart torncierge`).
 
 Keep `.env` out of git; it's listed in `.gitignore`.
 
@@ -243,7 +247,7 @@ Deleting `state.json` is safe but costs relearning time: sell-rate trends come b
 after ~20 minutes, listing prices within ~10 minutes, flight times after
 your next trip to each country, and restock history only as items sell
 out and restock again — days for a full picture. Stop the service first
-(`sudo systemctl stop torn-notifier`), or the running bot writes its
+(`sudo systemctl stop torncierge`), or the running bot writes its
 in-memory copy straight back.
 
 ## Stocks (`/stocks`)
