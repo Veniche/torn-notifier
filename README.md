@@ -154,10 +154,10 @@ bottom of each group. For each item it shows:
 
 Flight times start from Torn's standard table for your travel method and
 switch to your real flight times once the bot has seen you fly there.
-Snapshots, flight times, restock cycles and checked listing prices are
-kept in `state.json` so restarts don't lose them. Plushies and flowers sell easily; for less-traded items (e.g. Raw
-Ivory, Tiger Bone Powder) check the item market before buying a full load
-if you plan to list rather than sell to a trader.
+What the bot has learned survives restarts — see [State file](#state-file).
+Plushies and flowers sell easily; for less-traded items (e.g. Raw Ivory,
+Tiger Bone Powder) check the item market before buying a full load if you
+plan to list rather than sell to a trader.
 
 ## Restock watch (`/travel-restock`)
 
@@ -184,3 +184,31 @@ item. In the background, the bot also checks lowest listings for the
 items most likely to be in your reports, 20 at a time on each stock
 refresh (each kept 30 minutes), so the travel report's 🤝/🏪 choice uses
 real listings rather than Torn's average price.
+
+## State file
+
+The bot keeps what it learns in `state.json`, next to the script. It's
+git-ignored, holds no secrets (no keys or tokens), and stays small (a few
+hundred KB).
+
+| Key | What it holds | Kept for | Feeds |
+|---|---|---|---|
+| `history` | Stock snapshots per country and item: `[YATA update time, quantity]` | 3 hours (sell rates use the last 90 min) | "→ at landing" predictions, sell-out times |
+| `cycles` | Each sell-out → restock seen: `[restocked at, seconds empty, quantity restocked]` | 7 days | Restock estimates (median delay and quantity) |
+| `empty_since` | Items currently sold out, and when they sold out | Until they restock | Restock countdowns |
+| `flight_seconds` | Your real one-way flight time per `method:country` | Until replaced by a newer trip | Profit per hour, landing predictions |
+| `method` | Your last travel method (Standard, Airstrip, …) | Until it changes | Which flight times to use |
+| `listings` | Lowest item-market listing per item: `[price, checked at]` | Re-checked after 30 min, dropped after 24 hours | 🤝/🏪 choice in `/travel`, `/sell` |
+
+It's rewritten on every stock refresh (every `STOCK_POLL_SECONDS`), after
+each batch of listing checks, and after `/sell item:` checks a listing.
+Writes go to `state.json.tmp` first and then replace the file, so a crash
+mid-write can't corrupt it. If the file is unreadable anyway, the bot logs
+it and starts fresh.
+
+Deleting it is safe but costs relearning time: sell-rate trends come back
+after ~20 minutes, listing prices within ~10 minutes, flight times after
+your next trip to each country, and restock history only as items sell
+out and restock again — days for a full picture. Stop the service first
+(`sudo systemctl stop torn-notifier`), or the running bot writes its
+in-memory copy straight back.
