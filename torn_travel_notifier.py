@@ -1,7 +1,8 @@
 """
 Torn notifier — Discord DM a few seconds before you land, and when your
 drug cooldown ends. When you're about to land back in Torn it also sends a
-foreign stock report for your next trip (or run /travel any time).
+foreign stock report for your next trip (or run /travel any time). /sell
+compares TornExchange traders with the item market for any item.
 
 Polls Torn's API for your travel status and cooldowns. Once a trip or
 cooldown is detected, it schedules a single precise alert, rather than
@@ -36,9 +37,14 @@ TRAVEL_CAPACITY = int(os.getenv("TRAVEL_CAPACITY", "5"))
 # Most cash you'll carry abroad; items whose full load costs more are
 # bought only as far as this covers. Unset = no cap.
 TRAVEL_BUDGET = int(os.environ["TRAVEL_BUDGET"]) if os.getenv("TRAVEL_BUDGET") else None
-# Optional: value items at your TornExchange trader's buy prices.
+# Optional: compare TornExchange traders' buy prices (comma-separated
+# names) with selling on the item market. TE_TRADER is the old single name.
 TE_API_KEY = os.getenv("TE_API_KEY") or None
-TE_TRADER = os.getenv("TE_TRADER") or None
+TE_TRADERS = [t.strip() for t in (os.getenv("TE_TRADERS") or os.getenv("TE_TRADER") or "").split(",")
+              if t.strip()]
+# Item market: how far below the lowest listing you list, and Torn's sales fee.
+ITEM_MARKET_UNDERCUT = int(os.getenv("ITEM_MARKET_UNDERCUT", "0"))
+ITEM_MARKET_FEE = float(os.getenv("ITEM_MARKET_FEE", "5")) / 100
 STOCK_POLL_SECONDS = int(os.getenv("STOCK_POLL_SECONDS", "300"))
 STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
 
@@ -56,7 +62,7 @@ intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 tracker = stock.StockTracker(STATE_PATH, TORN_API_KEY, TRAVEL_CAPACITY, TRAVEL_BUDGET,
-                             TE_API_KEY, TE_TRADER)
+                             TE_API_KEY, TE_TRADERS, ITEM_MARKET_UNDERCUT, ITEM_MARKET_FEE)
 http: aiohttp.ClientSession | None = None
 
 # Arrival timestamp we've already scheduled an alert for, so a repeat
@@ -188,33 +194,34 @@ async def stock_loop() -> None:
     """Snapshot YATA stock regularly so sell-rates are ready when needed."""
     while not client.is_closed():
         try:
-            await tracker.refresh(http)
+            await tracker.refresh(http, listings=True)
         except Exception as exc:
             log.error("Stock refresh failed: %s", exc)
         await asyncio.sleep(STOCK_POLL_SECONDS)
 
 
-@tree.command(name="travel", description="Best items to buy abroad, with stock predicted at landing")
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-async def travel_command(interaction: discord.Interaction) -> None:
+async def owner_only(interaction: discord.Interaction) -> bool:
     # The repo is public and the bot sits in a server; only answer its owner.
     if interaction.user.id != DISCORD_USER_ID:
         await interaction.response.send_message("This bot is private.", ephemeral=True)
+        return False
+    return True
+
+
+async def travel_command(interaction: discord.Interaction) -> None:
+    if not await owner_only(interaction):
         return
     await interaction.response.defer(thinking=True)
     await interaction.followup.send(embeds=await fresh_stock_embeds())
 
 
-@tree.command(name="restock", description="Stock and restock times where you are (or a chosen country)")
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @app_commands.describe(country="Defaults to where you are or are flying to")
 @app_commands.choices(country=[
     app_commands.Choice(name=name, value=code) for code, (name, _, _) in stock.COUNTRIES.items()
 ])
 async def restock_command(interaction: discord.Interaction,
                           country: Optional[app_commands.Choice[str]] = None) -> None:
-    if interaction.user.id != DISCORD_USER_ID:
-        await interaction.response.send_message("This bot is private.", ephemeral=True)
+    if not await owner_only(interaction):
         return
     code = country.value if country else tracker.location_code()
     if code is None:
@@ -227,6 +234,47 @@ async def restock_command(interaction: discord.Interaction,
     except Exception as exc:
         log.error("Stock refresh failed: %s", exc)
     await interaction.followup.send(embed=discord.Embed.from_dict(tracker.restock_embed(code)))
+
+
+async def item_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    current = current.lower()
+    names = sorted(n for n in tracker.item_names() if current in n.lower())
+    return [app_commands.Choice(name=n, value=n) for n in names[:25]]
+
+
+@app_commands.describe(item="Item to sell", qty="How many (default: your travel capacity)")
+@app_commands.autocomplete(item=item_autocomplete)
+async def sell_command(interaction: discord.Interaction, item: str,
+                       qty: Optional[app_commands.Range[int, 1, 100000]] = None) -> None:
+    if not await owner_only(interaction):
+        return
+    item_id = tracker.item_names().get(item)
+    if item_id is None:
+        await interaction.response.send_message(f"Don't know an item called {item!r}.", ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    try:  # always check the live lowest listing for the item asked about
+        await tracker.fetch_listing(http, item_id)
+    except Exception as exc:
+        log.error("Listing fetch for %s failed: %s", item, exc)
+    embed = tracker.sell_embed(item_id, qty or TRAVEL_CAPACITY)
+    await interaction.followup.send(embed=discord.Embed.from_dict(embed))
+
+
+# Discord has no command aliases, so each extra name is its own command
+# pointing at the same handler.
+COMMANDS = [
+    (["travel", "t"], "Best items to buy abroad, with stock predicted at landing", travel_command),
+    (["travel-restock", "trs", "trestock"], "Stock and restock times where you are (or a chosen country)",
+     restock_command),
+    (["sell"], "Best place to sell an item: TornExchange traders vs item market", sell_command),
+]
+for names, description, callback in COMMANDS:
+    for name in names:
+        tree.add_command(app_commands.Command(
+            name=name, description=description, callback=callback,
+            allowed_contexts=app_commands.AppCommandContext(guild=True, dm_channel=True, private_channel=True),
+        ))
 
 
 async def setup_hook() -> None:

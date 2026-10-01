@@ -5,8 +5,9 @@ Stock comes from YATA's public travel export (crowd-sourced, refreshed by
 players' scripts every few minutes). YATA only gives the current quantity,
 so we keep our own snapshots to estimate how fast each item sells out,
 predict what will be left when you land, and learn how long items stay
-empty before restocking. Sell prices come from your TornExchange trader's
-buy list when configured, else Torn's market value.
+empty before restocking. Each item is valued at the best way to sell it:
+a TornExchange trader's buy price, or the item market (lowest listing minus
+your undercut, minus Torn's sales fee).
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ YATA_URL = "https://yata.yt/api/v1/travel/export/"
 TORN_ITEMS_URL = "https://api.torn.com/torn/"
 TORN_USER_URL = "https://api.torn.com/user/"
 TE_PRICES_URL = "https://tornexchange.com/api/prices/{trader}"
+TORN_LISTINGS_URL = "https://api.torn.com/v2/market/{item_id}/itemmarket"
 USER_AGENT = "torn-notifier (personal bot; github.com/Veniche/torn-notifier)"
 
 TYPE_ICONS = {"Plushie": "🧸 ", "Flower": "🌸 "}
@@ -42,6 +44,11 @@ MIN_RATE_SPAN_SECONDS = 20 * 60
 ITEMS_CACHE_SECONDS = 3600
 # TE caches trader price lists for 5 minutes server-side.
 TE_CACHE_SECONDS = 30 * 60
+
+# Lowest item-market listings are one API call per item, so they're
+# refreshed on rotation: this many per stock refresh, each kept this long.
+LISTINGS_PER_REFRESH = 20
+LISTING_CACHE_SECONDS = 30 * 60
 
 # Restock cycles (sold out -> restocked) kept for estimating restock delays.
 CYCLE_HISTORY_SECONDS = 7 * 24 * 3600
@@ -94,7 +101,7 @@ class Row:
     want: int  # units you'd buy with full stock (capacity, capped by budget)
     potential_hour: int  # profit/hr if `want` units were in stock
     key: str  # "country:item_id"
-    via_trader: bool  # sell price is the trader's buy price, not market value
+    sell_via: str  # where to sell for the best net price
 
 
 def duration(seconds: float) -> str:
@@ -116,16 +123,21 @@ def money(n: float) -> str:
 
 class StockTracker:
     def __init__(self, state_path: str, api_key: str, capacity: int, budget: int | None,
-                 te_key: str | None = None, te_trader: str | None = None) -> None:
+                 te_key: str | None = None, te_traders: list[str] | None = None,
+                 market_undercut: int = 0, market_fee: float = 0.05) -> None:
         self.state_path = state_path
         self.api_key = api_key
         self.capacity = capacity
         self.budget = budget
         self.te_key = te_key
-        self.te_trader = te_trader
-        # item_id -> trader's buy price; empty until fetched (or no trader set)
-        self.te_prices: dict[int, int] = {}
+        self.te_traders = te_traders or []
+        # trader -> {item_id: buy price}; a trader is missing until fetched
+        self.te_prices: dict[str, dict[int, int]] = {}
         self.te_fetched = 0.0
+        self.market_undercut = market_undercut
+        self.market_fee = market_fee
+        # item_id -> [lowest item-market listing, fetched_at]
+        self.listings: dict[int, list[int]] = {}
         # "country:item_id" -> [[restocked_at, seconds_empty, restock_qty], ...]
         self.cycles: dict[str, list[list[int]]] = {}
         # "country:item_id" -> when it was seen selling out (still empty)
@@ -186,8 +198,12 @@ class StockTracker:
                 self.flight_seconds[key] = arrival - departed
                 self._save()
 
-    async def refresh(self, session: aiohttp.ClientSession) -> None:
-        """Pull YATA stock (and item values when stale) and record a snapshot."""
+    async def refresh(self, session: aiohttp.ClientSession, listings: bool = False) -> None:
+        """Pull YATA stock (and item values when stale) and record a snapshot.
+
+        `listings` also rotates item-market listing checks; only the
+        background loop asks for that, so commands stay quick.
+        """
         headers = {"User-Agent": USER_AGENT}
         async with session.get(YATA_URL, headers=headers, timeout=20) as resp:
             data = await resp.json(content_type=None)
@@ -224,11 +240,13 @@ class StockTracker:
             log.error("Cash check failed: %s", exc)
             self.cash = None
 
-        if self.te_key and self.te_trader and time.time() - self.te_fetched > TE_CACHE_SECONDS:
-            try:
-                await self._fetch_te_prices(session)
-            except Exception as exc:  # keep using the last list, or market value
-                log.error("TornExchange price fetch failed: %s", exc)
+        if self.te_key and self.te_traders and time.time() - self.te_fetched > TE_CACHE_SECONDS:
+            for trader in self.te_traders:
+                try:
+                    await self._fetch_te_prices(session, trader)
+                except Exception as exc:  # keep using the last list, or the market
+                    log.error("TornExchange prices for %s failed: %s", trader, exc)
+            self.te_fetched = time.time()
 
         if time.time() - self.items_fetched > ITEMS_CACHE_SECONDS:
             params = {"selections": "items", "key": self.api_key}
@@ -238,8 +256,48 @@ class StockTracker:
                 self.items = {int(k): v for k, v in items.items() if v.get("market_value")}
                 self.items_fetched = time.time()
 
-    async def _fetch_te_prices(self, session: aiohttp.ClientSession) -> None:
-        url = TE_PRICES_URL.format(trader=self.te_trader)
+        if listings:
+            await self._refresh_listings(session)
+
+    async def _refresh_listings(self, session: aiohttp.ClientSession) -> None:
+        """Fetch lowest listings for the stalest items you could buy abroad."""
+        now = time.time()
+        # Only items that could make a report: affordable and profitable by
+        # some method. Value each by what a full load would earn.
+        load_value: dict[int, int] = {}
+        for country in self.latest.values():
+            for item in country.get("stocks", []):
+                info = self.items.get(item["id"])
+                if not info or not item["cost"]:
+                    continue
+                want = self.capacity if self.budget is None else min(self.capacity, self.budget // item["cost"])
+                best = max([info["market_value"]] + [p[item["id"]] for p in self.te_prices.values()
+                                                     if item["id"] in p])
+                if want and best > item["cost"]:
+                    load_value[item["id"]] = max(load_value.get(item["id"], 0), want * (best - item["cost"]))
+        # Stalest first, and among equally stale, the most lucrative.
+        stale = sorted((self.listings.get(i, [0, 0])[1], -v, i) for i, v in load_value.items()
+                       if now - self.listings.get(i, [0, 0])[1] > LISTING_CACHE_SECONDS)
+        for _, _, item_id in stale[:LISTINGS_PER_REFRESH]:
+            try:
+                await self.fetch_listing(session, item_id)
+            except Exception as exc:
+                log.error("Listing fetch for item %s failed: %s", item_id, exc)
+                break  # likely rate-limited or offline; try again next refresh
+
+    async def fetch_listing(self, session: aiohttp.ClientSession, item_id: int) -> None:
+        url = TORN_LISTINGS_URL.format(item_id=item_id)
+        params = {"limit": 1, "key": self.api_key}
+        async with session.get(url, params=params, timeout=15) as resp:
+            data = await resp.json()
+        if "error" in data:
+            raise ValueError(data["error"])
+        listings = (data.get("itemmarket") or {}).get("listings") or []
+        if listings:
+            self.listings[item_id] = [int(listings[0]["price"]), int(time.time())]
+
+    async def _fetch_te_prices(self, session: aiohttp.ClientSession, trader: str) -> None:
+        url = TE_PRICES_URL.format(trader=trader)
         params = {"key": self.te_key}
         headers = {"User-Agent": USER_AGENT}
         async with session.get(url, params=params, headers=headers, timeout=20) as resp:
@@ -247,9 +305,8 @@ class StockTracker:
         items = (data.get("data") or {}).get("items")
         if data.get("status") != "success" or not items:
             raise ValueError(f"unexpected response: {str(data)[:200]}")
-        self.te_prices = {int(i["item_id"]): int(i["price"]) for i in items if i.get("price")}
-        self.te_fetched = time.time()
-        log.info("Loaded %d buy prices from TE trader %s", len(self.te_prices), self.te_trader)
+        self.te_prices[trader] = {int(i["item_id"]): int(i["price"]) for i in items if i.get("price")}
+        log.info("Loaded %d buy prices from TE trader %s", len(self.te_prices[trader]), trader)
 
     def _note_cycle(self, key: str, prev: list[int], cur: list[int]) -> None:
         """Record sell-outs and restocks between two consecutive snapshots."""
@@ -264,11 +321,23 @@ class StockTracker:
 
     # --- prediction ------------------------------------------------------
 
-    def sell_price(self, item_id: int) -> tuple[int, bool]:
-        """(price you'd sell at, whether it's the trader's price)."""
-        if item_id in self.te_prices:
-            return self.te_prices[item_id], True
-        return self.items[item_id]["market_value"], False
+    def sale_options(self, item_id: int) -> list[tuple[int, str, str]]:
+        """Every way to sell one unit, best first: (net price, where, how it's worked out)."""
+        options = [(prices[item_id], trader, "TornExchange buy price, no fee")
+                   for trader, prices in self.te_prices.items() if item_id in prices]
+        listing = self.listings.get(item_id)
+        if listing:
+            base, basis = listing[0], f"lowest listing ${listing[0]:,}"
+        else:  # not fetched yet; Torn's average sale price is the best guess
+            base, basis = self.items[item_id]["market_value"], "market value (listing not checked yet)"
+        net = int((base - self.market_undercut) * (1 - self.market_fee))
+        options.append((net, "item market",
+                        f"{basis} − ${self.market_undercut:,} undercut − {self.market_fee:.0%} fee"))
+        return sorted(options, reverse=True)
+
+    def best_sale(self, item_id: int) -> tuple[int, str]:
+        net, where, _ = self.sale_options(item_id)[0]
+        return net, where
 
     def restock_estimate(self, key: str) -> tuple[int | None, int, int | None]:
         """(seconds until restock or None, cycles seen, typical restock qty)."""
@@ -310,7 +379,7 @@ class StockTracker:
                 info = self.items.get(item["id"])
                 if not info:
                     continue
-                price, via_trader = self.sell_price(item["id"])
+                price, sell_via = self.best_sale(item["id"])
                 margin = price - item["cost"]
                 want = self.capacity
                 if self.budget is not None and item["cost"] > 0:
@@ -329,7 +398,7 @@ class StockTracker:
                     f"{flag} {name}", TYPE_ICONS.get(info["type"], "") + item["name"],
                     item["quantity"], at_landing, buy, per_trip, int(per_trip / round_trip_hours),
                     buy * item["cost"], want, int(want * margin / round_trip_hours),
-                    f"{code}:{item['id']}", via_trader,
+                    f"{code}:{item['id']}", sell_via,
                 ))
         for rows in groups.values():
             rows.sort(key=lambda r: r.per_hour, reverse=True)
@@ -353,8 +422,7 @@ class StockTracker:
                     status = f"⚠️ {r.now:,} now → ~{r.at_landing:,} at landing"
                 else:
                     status = f"✅ {r.now:,} now → ~{r.at_landing:,} at landing"
-                market_only = "" if r.via_trader or not self.te_prices else " · 🏪 market only"
-                line = (f"**{r.item}** · {r.country}{market_only}\n{status} · "
+                line = (f"**{r.item}** · {r.country} · {self._via(r.sell_via)}\n{status} · "
                         f"{money(r.per_trip)}/trip · **{money(r.per_hour)}/hr**")
                 if self.cash is not None and self.cash < r.load_cost:
                     line += f"\n💸 costs {money(r.load_cost)} — bring {money(r.load_cost - self.cash)} more cash"
@@ -380,9 +448,15 @@ class StockTracker:
             return ""
         return ", restock due now" if eta <= 0 else f", restock ~{duration(eta)}"
 
+    @staticmethod
+    def _via(where: str) -> str:
+        return "🏪 market" if where == "item market" else f"🤝 {where}"
+
     def _footer(self, age_min: int) -> str:
         cash = "cash unknown" if self.cash is None else f"{money(self.cash)} on hand"
-        prices = f"selling to {self.te_trader}" if self.te_prices else "market value"
+        traders = len(self.te_prices)
+        prices = (f"net of {self.market_fee:.0%} market fee"
+                  + (f" vs {traders} trader{'s' if traders != 1 else ''}" if traders else ""))
         return (f"{self.method} · {self.capacity} items/trip · "
                 f"{'no budget cap' if self.budget is None else money(self.budget) + ' budget'} · "
                 f"{cash} · {prices} · stock data up to {age_min} min old (YATA)")
@@ -417,8 +491,26 @@ class StockTracker:
                 status = f"❌ out · restock in ~{duration(eta)}"
             if r.now == 0 and qty:
                 status += f" · usually +{qty:,} · {seen} cycle{'s' if seen != 1 else ''}"
-            lines.append(f"**{r.item}** · {money(r.potential_hour)}/hr at full load\n{status}")
+            lines.append(f"**{r.item}** · {money(r.potential_hour)}/hr at full load · "
+                         f"{self._via(r.sell_via)}\n{status}")
         age_min = max(int((time.time() - country.get("update", 0)) / 60), 0)
         return {"title": f"{flag} {name} — restock watch",
                 "description": "\n".join(lines) or "Nothing profitable here.",
                 "footer": {"text": self._footer(age_min)}}
+
+    def item_names(self) -> dict[str, int]:
+        return {info["name"]: item_id for item_id, info in self.items.items()}
+
+    def sell_embed(self, item_id: int, qty: int) -> dict:
+        name = self.items[item_id]["name"]
+        options = self.sale_options(item_id)
+        best = options[0][0]
+        lines = []
+        for rank, (net, where, how) in enumerate(options):
+            medal = "🥇" if rank == 0 else "▫️"
+            gap = "" if rank == 0 else f" (−${(best - net) * qty:,} vs best)"
+            lines.append(f"{medal} **{self._via(where)}** — ${net:,} each · "
+                         f"**${net * qty:,}** for {qty}{gap}\n{how}")
+        if not self.te_prices:
+            lines.append("_No TornExchange traders configured — only the item market is compared._")
+        return {"title": f"Where to sell {name}", "description": "\n".join(lines)}
