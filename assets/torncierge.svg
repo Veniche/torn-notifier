@@ -1,30 +1,96 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <radialGradient id="bg" cx="50%" cy="38%" r="72%">
-      <stop offset="0" stop-color="#22406A"/>
-      <stop offset="1" stop-color="#0B1426"/>
+    <radialGradient id="sky" cx="50%" cy="34%" r="80%">
+      <stop offset="0" stop-color="#4a5057"/>
+      <stop offset="0.55" stop-color="#272b30"/>
+      <stop offset="1" stop-color="#111315"/>
     </radialGradient>
-    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#FFE7A8"/>
-      <stop offset="0.45" stop-color="#F2B33D"/>
-      <stop offset="1" stop-color="#B0701A"/>
+    <linearGradient id="capSide" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4c5056"/>
+      <stop offset="0.3" stop-color="#b6bbc0"/>
+      <stop offset="0.55" stop-color="#8e9398"/>
+      <stop offset="1" stop-color="#3f4348"/>
     </linearGradient>
-    <linearGradient id="base" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#F5C25A"/>
-      <stop offset="1" stop-color="#8E5710"/>
+    <linearGradient id="capTop" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d6dade"/>
+      <stop offset="1" stop-color="#8f9499"/>
     </linearGradient>
+    <linearGradient id="band" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3f5a22"/>
+      <stop offset="0.35" stop-color="#93ba56"/>
+      <stop offset="1" stop-color="#34491c"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#93ba56" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#93ba56" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#93ba56" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="vignette" cx="50%" cy="45%" r="72%">
+      <stop offset="0.55" stop-color="#000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0.6"/>
+    </radialGradient>
   </defs>
-  <rect width="1024" height="1024" fill="url(#bg)"/>
-  <!-- soft shadow under the bell -->
-  <ellipse cx="512" cy="742" rx="300" ry="24" fill="#000" opacity="0.28"/>
-  <!-- knob -->
-  <rect x="490" y="316" width="44" height="120" rx="10" fill="url(#base)"/>
-  <circle cx="512" cy="306" r="40" fill="url(#gold)"/>
-  <!-- dome -->
-  <path d="M 286 652 A 226 236 0 0 1 738 652 Z" fill="url(#gold)"/>
-  <!-- highlight -->
-  <path d="M 366 592 A 164 172 0 0 1 472 462" fill="none" stroke="#FFF6DA" stroke-width="28" stroke-linecap="round" opacity="0.55"/>
-  <!-- base plate -->
-  <rect x="206" y="648" width="612" height="62" rx="31" fill="url(#base)"/>
-  <rect x="236" y="656" width="552" height="12" rx="6" fill="#FFE7A8" opacity="0.45"/>
+
+  <rect width="1024" height="1024" fill="url(#sky)"/>
+
+  <!-- skyline behind the figure -->
+  <g fill="#30353b">
+    <rect x="20" y="560" width="120" height="464"/>
+    <rect x="150" y="500" width="90" height="524"/>
+    <rect x="190" y="450" width="8" height="50"/>
+    <rect x="790" y="520" width="100" height="504"/>
+    <rect x="836" y="460" width="7" height="60"/>
+    <rect x="900" y="590" width="124" height="434"/>
+  </g>
+  <g fill="#1d2024">
+    <rect x="0" y="680" width="170" height="344"/>
+    <rect x="98" y="628" width="56" height="44" rx="6"/>
+    <polygon points="92,630 126,604 160,630"/>
+    <rect x="106" y="670" width="6" height="12"/>
+    <rect x="140" y="670" width="6" height="12"/>
+    <rect x="850" y="660" width="174" height="364"/>
+  </g>
+  <g fill="#93ba56">
+    <rect x="40" y="720" width="20" height="26" opacity="0.7"/>
+    <rect x="96" y="790" width="20" height="26" opacity="0.45"/>
+    <rect x="180" y="560" width="18" height="24" opacity="0.5"/>
+    <rect x="820" y="580" width="18" height="24" opacity="0.6"/>
+    <rect x="900" y="720" width="20" height="26" opacity="0.75"/>
+    <rect x="960" y="800" width="20" height="26" opacity="0.45"/>
+  </g>
+
+  <g transform="translate(512 488) scale(1.45) translate(-512 -560)">
+  <!-- the concierge: shadowy head-and-shoulders silhouette -->
+  <g fill="#0b0c0e">
+    <path d="M 196 1024 C 210 860 330 800 430 786 L 594 786 C 694 800 814 860 828 1024 Z"/>
+    <rect x="452" y="700" width="120" height="110" rx="30"/>
+    <ellipse cx="512" cy="600" rx="128" ry="150"/>
+  </g>
+  <path d="M 616 520 A 128 150 0 0 1 560 742" fill="none" stroke="#93ba56" stroke-width="6" opacity="0.45"/>
+  <path d="M 408 520 A 128 150 0 0 0 464 742" fill="none" stroke="#93ba56" stroke-width="4" opacity="0.25"/>
+  <!-- faint green rim light on the shoulders -->
+  <path d="M 214 1000 C 236 870 340 812 432 800" fill="none" stroke="url(#rim)" stroke-width="8"/>
+  <path d="M 810 1000 C 788 870 684 812 592 800" fill="none" stroke="url(#rim)" stroke-width="8"/>
+  <!-- uniform collar -->
+  <path d="M 420 784 L 512 884 L 470 790 Z" fill="#5f8132"/>
+  <path d="M 604 784 L 512 884 L 554 790 Z" fill="#4e6b28"/>
+  <path d="M 420 784 L 512 884 L 604 784" fill="none" stroke="#a6cc66" stroke-width="22" stroke-linejoin="round"/>
+
+  <!-- pillbox cap, tilted on the head -->
+  <g transform="rotate(-12 512 470)">
+    <!-- chin strap down the jaw -->
+    <path d="M 420 506 Q 436 672 512 716 Q 588 672 604 506" fill="none" stroke="#9ea4aa" stroke-width="6" stroke-linecap="round" opacity="0.75"/>
+    <path d="M 392 380 L 392 500 A 120 30 0 0 0 632 500 L 632 380 Z" fill="url(#capSide)"/>
+    <path d="M 392 440 L 392 500 A 120 30 0 0 0 632 500 L 632 440 A 120 30 0 0 1 392 440 Z" fill="url(#band)"/>
+    <path d="M 392 440 A 120 30 0 0 0 632 440" fill="none" stroke="#c4e295" stroke-width="7"/>
+    <path d="M 392 470 A 120 30 0 0 0 632 470" fill="none" stroke="#2c3f15" stroke-width="4" opacity="0.7"/>
+    <path d="M 392 500 A 120 30 0 0 0 632 500" fill="none" stroke="#c4e295" stroke-width="6" opacity="0.8"/>
+    <ellipse cx="512" cy="380" rx="120" ry="30" fill="url(#capTop)"/>
+    <ellipse cx="512" cy="380" rx="120" ry="30" fill="none" stroke="#a6cc66" stroke-width="14"/>
+    <ellipse cx="490" cy="372" rx="58" ry="9" fill="#fff" opacity="0.22"/>
+    <circle cx="512" cy="503" r="16" fill="#e1e5e8"/><circle cx="512" cy="503" r="8" fill="#9ca1a6"/>
+  </g>
+
+  </g>
+  <rect width="1024" height="1024" fill="url(#vignette)"/>
 </svg>
