@@ -5,8 +5,8 @@ both abroad and on the way back home, and when your drug cooldown ends.
 Polls the Torn API on an interval, then schedules one precise alert per
 trip or cooldown instead of polling tightly near the deadline.
 
-When you're about to land back in Torn, it also sends a **plushie & flower
-stock report** for your next trip, and you can pull one any time with the
+When you're about to land back in Torn, it also sends a **foreign stock
+report** (best items to buy abroad) for your next trip, and you can pull one any time with the
 `/travel` slash command in the bot's DMs.
 
 ## 1. Create the Discord bot
@@ -41,6 +41,7 @@ TORN_API_KEY=your-api-key
 # optional
 # ALERT_LEAD_SECONDS=30
 # TRAVEL_CAPACITY=5
+# TRAVEL_BUDGET=500000
 # POLL_INTERVAL_SECONDS=60
 ```
 
@@ -77,6 +78,9 @@ journalctl -u torn-notifier -f        # tail logs
 
 - `TRAVEL_CAPACITY` — how many items you can carry per trip (default 5).
   Set this to your real capacity; profit numbers scale with it.
+- `TRAVEL_BUDGET` — the most cash you carry abroad (default: no cap). Items
+  costing more than budget ÷ capacity are counted only as far as the budget
+  covers, so expensive items drop down the ranking.
 - `STOCK_POLL_SECONDS` — how often stock snapshots are taken (default 300).
 
 Set these in `.env`, then restart the service
@@ -88,7 +92,10 @@ Keep `.env` out of git; it's listed in `.gitignore`.
 
 Grouped by trip length (short: Mexico, Cayman, Canada · medium: Hawaii,
 UK, Argentina, Switzerland · long: Japan, China, UAE, South Africa) and
-sorted by profit per hour. For each plushie and flower it shows:
+sorted by profit per hour, top 8 per group. It covers every foreign item
+that's profitable and fits your budget; plushies are marked 🧸 and flowers
+🌸. Out-of-stock items that would have made the list are named at the
+bottom of each group. For each item it shows:
 
 - **Stock now → predicted at landing.** Stock comes from
   [YATA](https://yata.yt)'s public travel export, which players' scripts
@@ -97,7 +104,7 @@ sorted by profit per hour. For each plushie and flower it shows:
   your flight. Until it has ~20 minutes of history it shows "no trend yet".
   Restocks aren't predicted: an item that's out now is listed as out.
 - **Profit per trip:** (Torn market value − shop cost) × the items you can
-  actually buy (your capacity, or the predicted stock if lower).
+  actually buy (your capacity, capped by your budget and by predicted stock).
 - **Profit per hour:** profit per trip ÷ round-trip flight time.
 - **💸 Cash check:** if your cash on hand can't cover the full load, the
   item shows how much more to bring. Only cash on hand counts, since you
@@ -108,4 +115,6 @@ Flight times start from Torn's standard table for your travel method and
 switch to your real flight times once the bot has seen you fly there.
 Snapshots and flight times are kept in `state.json` so restarts don't lose
 them. Market value is an average of recent sales, so real sale prices can
-be a bit lower.
+be a bit lower. Plushies and flowers sell easily; for less-traded items
+(e.g. Raw Ivory, Tiger Bone Powder) check the item market before buying a
+full load, because selling 18 at market value may take a while.

@@ -1,7 +1,7 @@
 """
 Torn notifier — Discord DM a few seconds before you land, and when your
 drug cooldown ends. When you're about to land back in Torn it also sends a
-plushie/flower stock report for your next trip (or run /travel any time).
+foreign stock report for your next trip (or run /travel any time).
 
 Polls Torn's API for your travel status and cooldowns. Once a trip or
 cooldown is detected, it schedules a single precise alert, rather than
@@ -32,6 +32,9 @@ TORN_API_KEY = os.environ["TORN_API_KEY"]
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
 ALERT_LEAD_SECONDS = int(os.getenv("ALERT_LEAD_SECONDS", "30"))
 TRAVEL_CAPACITY = int(os.getenv("TRAVEL_CAPACITY", "5"))
+# Most cash you'll carry abroad; items whose full load costs more are
+# bought only as far as this covers. Unset = no cap.
+TRAVEL_BUDGET = int(os.environ["TRAVEL_BUDGET"]) if os.getenv("TRAVEL_BUDGET") else None
 STOCK_POLL_SECONDS = int(os.getenv("STOCK_POLL_SECONDS", "300"))
 STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
 
@@ -48,7 +51,7 @@ log = logging.getLogger("torn-notifier")
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
-tracker = stock.StockTracker(STATE_PATH, TORN_API_KEY, TRAVEL_CAPACITY)
+tracker = stock.StockTracker(STATE_PATH, TORN_API_KEY, TRAVEL_CAPACITY, TRAVEL_BUDGET)
 http: aiohttp.ClientSession | None = None
 
 # Arrival timestamp we've already scheduled an alert for, so a repeat
@@ -186,7 +189,7 @@ async def stock_loop() -> None:
         await asyncio.sleep(STOCK_POLL_SECONDS)
 
 
-@tree.command(name="travel", description="Plushie & flower stock abroad, predicted at landing")
+@tree.command(name="travel", description="Best items to buy abroad, with stock predicted at landing")
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 async def travel_command(interaction: discord.Interaction) -> None:
     # The repo is public and the bot sits in a server; only answer its owner.

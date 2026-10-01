@@ -1,5 +1,5 @@
 """
-Foreign stock report for plushies and flowers.
+Foreign stock report: every item abroad you can afford a load of.
 
 Stock comes from YATA's public travel export (crowd-sourced, refreshed by
 players' scripts every few minutes). YATA only gives the current quantity,
@@ -24,7 +24,11 @@ TORN_ITEMS_URL = "https://api.torn.com/torn/"
 TORN_USER_URL = "https://api.torn.com/user/"
 USER_AGENT = "torn-notifier (personal bot; github.com/Veniche/torn-notifier)"
 
-ITEM_TYPES = {"Plushie", "Flower"}
+TYPE_ICONS = {"Plushie": "🧸 ", "Flower": "🌸 "}
+
+# Items shown per trip-length group; keeps the report under Discord's
+# 6,000-character limit per message.
+TOP_PER_GROUP = 8
 
 # How long to keep snapshots, and how much of them the sell-rate uses.
 HISTORY_SECONDS = 3 * 3600
@@ -76,6 +80,8 @@ class Row:
     per_trip: int
     per_hour: int
     load_cost: int  # cost of buying `buy` units
+    want: int  # units you'd buy with full stock (capacity, capped by budget)
+    potential_hour: int  # profit/hr if `want` units were in stock
 
 
 def money(n: float) -> str:
@@ -89,10 +95,11 @@ def money(n: float) -> str:
 
 
 class StockTracker:
-    def __init__(self, state_path: str, api_key: str, capacity: int) -> None:
+    def __init__(self, state_path: str, api_key: str, capacity: int, budget: int | None) -> None:
         self.state_path = state_path
         self.api_key = api_key
         self.capacity = capacity
+        self.budget = budget
         # "country:item_id" -> [[yata_update_ts, quantity], ...]
         self.history: dict[str, list[list[int]]] = {}
         # "Method:country" -> observed one-way seconds
@@ -178,7 +185,7 @@ class StockTracker:
             async with session.get(TORN_ITEMS_URL, params=params, timeout=30) as resp:
                 items = (await resp.json()).get("items", {})
             if items:
-                self.items = {int(k): v for k, v in items.items() if v.get("type") in ITEM_TYPES}
+                self.items = {int(k): v for k, v in items.items() if v.get("market_value")}
                 self.items_fetched = time.time()
 
     # --- prediction ------------------------------------------------------
@@ -211,18 +218,24 @@ class StockTracker:
                 if not info:
                     continue
                 margin = info["market_value"] - item["cost"]
-                if margin <= 0:
+                want = self.capacity
+                if self.budget is not None and item["cost"] > 0:
+                    want = min(want, self.budget // item["cost"])
+                if margin <= 0 or want == 0:
                     continue
                 rate = self.sell_rate(f"{code}:{item['id']}")
                 at_landing = None
                 if rate is not None:
                     at_landing = max(int(item["quantity"] - rate * (elapsed + flight)), 0)
                 expected = item["quantity"] if at_landing is None else at_landing
-                buy = min(self.capacity, expected)
+                buy = min(want, expected)
+                round_trip_hours = 2 * flight / 3600
                 per_trip = buy * margin
-                per_hour = int(per_trip / (2 * flight / 3600))
-                groups[group].append(Row(f"{flag} {name}", item["name"], item["quantity"],
-                                         at_landing, buy, per_trip, per_hour, buy * item["cost"]))
+                groups[group].append(Row(
+                    f"{flag} {name}", TYPE_ICONS.get(info["type"], "") + item["name"],
+                    item["quantity"], at_landing, buy, per_trip, int(per_trip / round_trip_hours),
+                    buy * item["cost"], want, int(want * margin / round_trip_hours),
+                ))
         for rows in groups.values():
             rows.sort(key=lambda r: r.per_hour, reverse=True)
         return groups
@@ -235,14 +248,13 @@ class StockTracker:
         groups = self.rows()
         embeds = []
         for group, title in GROUPS:
-            lines, gone = [], []
-            for r in groups[group]:
-                if r.now == 0 or r.at_landing == 0:
-                    gone.append(f"{r.item} ({r.country.split(' ', 1)[1]})")
-                    continue
+            rows = groups[group]
+            shown = [r for r in rows if r.buy > 0][:TOP_PER_GROUP]
+            lines = []
+            for r in shown:
                 if r.at_landing is None:
                     status = f"{r.now:,} now · no trend yet"
-                elif r.at_landing < self.capacity:
+                elif r.at_landing < r.want:
                     status = f"⚠️ {r.now:,} now → ~{r.at_landing:,} at landing"
                 else:
                     status = f"✅ {r.now:,} now → ~{r.at_landing:,} at landing"
@@ -251,12 +263,19 @@ class StockTracker:
                 if self.cash is not None and self.cash < r.load_cost:
                     line += f"\n💸 costs {money(r.load_cost)} — bring {money(r.load_cost - self.cash)} more cash"
                 lines.append(line)
+            # Out-of-stock items worth knowing about: ones that would have made
+            # the list if they were in stock.
+            cutoff = shown[-1].per_hour if len(shown) == TOP_PER_GROUP else 0
+            gone = sorted((r for r in rows if r.buy == 0 and r.potential_hour > cutoff),
+                          key=lambda r: r.potential_hour, reverse=True)[:5]
             if gone:
-                lines.append(f"❌ Out / sold out by landing: {', '.join(gone)}")
+                names = ", ".join(f"{r.item} ({r.country.split(' ', 1)[1]})" for r in gone)
+                lines.append(f"❌ Out / sold out by landing: {names}")
             embeds.append({"title": title, "description": "\n".join(lines) or "Nothing profitable."})
         cash = "cash unknown" if self.cash is None else f"{money(self.cash)} on hand"
         embeds[-1]["footer"] = {
-            "text": f"{self.method} · {self.capacity} items/trip · {cash} · "
+            "text": f"{self.method} · {self.capacity} items/trip · "
+                    f"{'no budget cap' if self.budget is None else money(self.budget) + ' budget'} · {cash} · "
                     f"stock data up to {age_min} min old (YATA)"
         }
         return embeds
