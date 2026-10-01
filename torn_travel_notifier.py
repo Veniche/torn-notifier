@@ -1,7 +1,7 @@
 """
 Torn notifier — Discord DM a few seconds before you land, and when your
 drug cooldown ends. When you're about to land back in Torn it also sends a
-plushie/flower stock report for your next trip (or run /stock any time).
+plushie/flower stock report for your next trip (or run /travel any time).
 
 Polls Torn's API for your travel status and cooldowns. Once a trip or
 cooldown is detected, it schedules a single precise alert, rather than
@@ -186,9 +186,9 @@ async def stock_loop() -> None:
         await asyncio.sleep(STOCK_POLL_SECONDS)
 
 
-@tree.command(name="stock", description="Plushie & flower stock, predicted at landing")
+@tree.command(name="travel", description="Plushie & flower stock abroad, predicted at landing")
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-async def stock_command(interaction: discord.Interaction) -> None:
+async def travel_command(interaction: discord.Interaction) -> None:
     # The repo is public and the bot sits in a server; only answer its owner.
     if interaction.user.id != DISCORD_USER_ID:
         await interaction.response.send_message("This bot is private.", ephemeral=True)

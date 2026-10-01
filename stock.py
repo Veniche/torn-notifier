@@ -21,6 +21,7 @@ log = logging.getLogger("torn-notifier")
 
 YATA_URL = "https://yata.yt/api/v1/travel/export/"
 TORN_ITEMS_URL = "https://api.torn.com/torn/"
+TORN_USER_URL = "https://api.torn.com/user/"
 USER_AGENT = "torn-notifier (personal bot; github.com/Veniche/torn-notifier)"
 
 ITEM_TYPES = {"Plushie", "Flower"}
@@ -74,6 +75,7 @@ class Row:
     buy: int
     per_trip: int
     per_hour: int
+    load_cost: int  # cost of buying `buy` units
 
 
 def money(n: float) -> str:
@@ -96,6 +98,8 @@ class StockTracker:
         # "Method:country" -> observed one-way seconds
         self.flight_seconds: dict[str, int] = {}
         self.method = "Standard"
+        # Cash on hand at the last refresh; None if the key can't read it.
+        self.cash: int | None = None
         self.latest: dict = {}
         self.items: dict[int, dict] = {}
         self.items_fetched = 0.0
@@ -159,6 +163,16 @@ class StockTracker:
                 del self.history[key]
         self._save()
 
+        # Only cash on hand counts: vault and bank money can't be reached abroad.
+        # A failure here shouldn't block the rest of the refresh.
+        try:
+            params = {"selections": "money", "key": self.api_key}
+            async with session.get(TORN_USER_URL, params=params, timeout=15) as resp:
+                self.cash = (await resp.json()).get("money_onhand")
+        except Exception as exc:
+            log.error("Cash check failed: %s", exc)
+            self.cash = None
+
         if time.time() - self.items_fetched > ITEMS_CACHE_SECONDS:
             params = {"selections": "items", "key": self.api_key}
             async with session.get(TORN_ITEMS_URL, params=params, timeout=30) as resp:
@@ -208,7 +222,7 @@ class StockTracker:
                 per_trip = buy * margin
                 per_hour = int(per_trip / (2 * flight / 3600))
                 groups[group].append(Row(f"{flag} {name}", item["name"], item["quantity"],
-                                         at_landing, buy, per_trip, per_hour))
+                                         at_landing, buy, per_trip, per_hour, buy * item["cost"]))
         for rows in groups.values():
             rows.sort(key=lambda r: r.per_hour, reverse=True)
         return groups
@@ -232,12 +246,17 @@ class StockTracker:
                     status = f"⚠️ {r.now:,} now → ~{r.at_landing:,} at landing"
                 else:
                     status = f"✅ {r.now:,} now → ~{r.at_landing:,} at landing"
-                lines.append(f"**{r.item}** · {r.country}\n{status} · "
-                             f"{money(r.per_trip)}/trip · **{money(r.per_hour)}/hr**")
+                line = (f"**{r.item}** · {r.country}\n{status} · "
+                        f"{money(r.per_trip)}/trip · **{money(r.per_hour)}/hr**")
+                if self.cash is not None and self.cash < r.load_cost:
+                    line += f"\n💸 costs {money(r.load_cost)} — bring {money(r.load_cost - self.cash)} more cash"
+                lines.append(line)
             if gone:
                 lines.append(f"❌ Out / sold out by landing: {', '.join(gone)}")
             embeds.append({"title": title, "description": "\n".join(lines) or "Nothing profitable."})
+        cash = "cash unknown" if self.cash is None else f"{money(self.cash)} on hand"
         embeds[-1]["footer"] = {
-            "text": f"{self.method} · {self.capacity} items/trip · stock data up to {age_min} min old (YATA)"
+            "text": f"{self.method} · {self.capacity} items/trip · {cash} · "
+                    f"stock data up to {age_min} min old (YATA)"
         }
         return embeds

@@ -7,7 +7,7 @@ trip or cooldown instead of polling tightly near the deadline.
 
 When you're about to land back in Torn, it also sends a **plushie & flower
 stock report** for your next trip, and you can pull one any time with the
-`/stock` slash command in the bot's DMs.
+`/travel` slash command in the bot's DMs.
 
 ## 1. Create the Discord bot
 
@@ -99,6 +99,10 @@ sorted by profit per hour. For each plushie and flower it shows:
 - **Profit per trip:** (Torn market value − shop cost) × the items you can
   actually buy (your capacity, or the predicted stock if lower).
 - **Profit per hour:** profit per trip ÷ round-trip flight time.
+- **💸 Cash check:** if your cash on hand can't cover the full load, the
+  item shows how much more to bring. Only cash on hand counts, since you
+  can't reach your vault or bank abroad. Needs a key with access to the
+  `money` selection; otherwise the footer shows "cash unknown".
 
 Flight times start from Torn's standard table for your travel method and
 switch to your real flight times once the bot has seen you fly there.
