@@ -17,6 +17,7 @@ the bot's DMs give you the same report and more on demand — see
 | `/travel` | `/t` | Foreign stock report: best items to buy abroad, grouped by trip length, with stock predicted at landing, profit per trip and per hour, and where to sell each. |
 | `/travel-restock [country]` | `/trs` | Stock, sell-out and restock estimates for the country you're in or flying to, or the `country` you pick. |
 | `/sell` | — | Every item in the `/travel` report, grouped by where it sells best (🤝 each trader / 🏪 item market), with the net price per unit and how far ahead of the next-best method it is. |
+| `/stocks` | — | Your stock holdings (value, monthly swing, block status / days to next dividend), the dividend blocks your portfolio can afford ranked by yearly yield, and the most stable stocks for money you may need soon. |
 | `/sell item:<name> [qty]` | — | One item in detail: every way to sell it, for `qty` units (default: your travel capacity). Checks its live lowest listing. Item names autocomplete. |
 
 Discord has no real aliases, so each alias is its own entry in the `/`
@@ -32,6 +33,7 @@ until then, typing the name just sends a plain message the bot ignores.
 | `ALERT_LEAD_SECONDS` before any landing | 🛬 Landing in ~30s — *destination* |
 | Right after the alert for a landing in Torn | The `/travel` stock report |
 | Drug cooldown reaches 0 | 💊 Drug cooldown is over |
+| A stock dividend you hold a block for is ready | 💰 *STOCK* dividend ready — *payout* (once per dividend; again after a restart if still uncollected) |
 
 ## 1. Create the Discord bot
 
@@ -212,3 +214,22 @@ your next trip to each country, and restock history only as items sell
 out and restock again — days for a full picture. Stop the service first
 (`sudo systemctl stop torn-notifier`), or the running bot writes its
 in-memory copy straight back.
+
+## Stocks (`/stocks`)
+
+Torn stock prices only move a few percent a month, so the bot doesn't try
+to predict them. What it measures instead:
+
+- **Dividends.** Active stocks pay cash, items or points on a schedule if
+  you hold a full benefit block (the stock's share requirement). Yield =
+  payout per year ÷ block cost at today's price. Item payouts are valued at
+  their best net sale price (see `/sell`), points at Torn's average point
+  price; energy, nerve, happiness and passive perks aren't counted as cash.
+  Only the first block is valued.
+- **Swing.** (high − low) ÷ price over the last month — how much you could
+  lose by having to sell at a bad moment. Checked for 6 stocks per stock
+  refresh and kept 6 hours, so right after a restart some show "swing not
+  checked yet".
+
+The dividend-ready DM checks your holdings on every stock refresh. Ready
+dividends must still be collected by hand on the stock market page.

@@ -2,7 +2,8 @@
 Torn notifier — Discord DM a few seconds before you land, and when your
 drug cooldown ends. When you're about to land back in Torn it also sends a
 foreign stock report for your next trip (or run /travel any time). /sell
-compares TornExchange traders with the item market for any item.
+compares TornExchange traders with the item market for any item. /stocks
+shows where your money earns dividends, and a DM fires when one is ready.
 
 Polls Torn's API for your travel status and cooldowns. Once a trip or
 cooldown is detected, it schedules a single precise alert, rather than
@@ -24,6 +25,7 @@ from discord import app_commands
 from dotenv import load_dotenv
 
 import stock
+import stocks
 
 load_dotenv()
 
@@ -64,6 +66,15 @@ tree = app_commands.CommandTree(client)
 tracker = stock.StockTracker(STATE_PATH, TORN_API_KEY, TRAVEL_CAPACITY, TRAVEL_BUDGET,
                              TE_API_KEY, TE_TRADERS, ITEM_MARKET_UNDERCUT, ITEM_MARKET_FEE)
 http: aiohttp.ClientSession | None = None
+
+
+def item_value(name: str) -> int | None:
+    """What one unit of an item nets you at its best sale method."""
+    item_id = {n.lower(): i for n, i in tracker.item_names().items()}.get(name.lower())
+    return tracker.best_sale(item_id)[0] if item_id is not None else None
+
+
+market = stocks.StockMarket(TORN_API_KEY, item_value)
 
 # Arrival timestamp we've already scheduled an alert for, so a repeat
 # poll of the same trip doesn't schedule a second alert.
@@ -197,6 +208,13 @@ async def stock_loop() -> None:
             await tracker.refresh(http, listings=True)
         except Exception as exc:
             log.error("Stock refresh failed: %s", exc)
+        try:
+            for holding in await market.refresh(http):
+                s = market.market[holding["id"]]
+                await send_dm(f"💰 {s['acronym']} dividend ready — {s['bonus']['description']}. "
+                              f"Collect it on the stock market page.")
+        except Exception as exc:
+            log.error("Stock market refresh failed: %s", exc)
         await asyncio.sleep(STOCK_POLL_SECONDS)
 
 
@@ -272,6 +290,18 @@ async def sell_command(interaction: discord.Interaction, item: Optional[str] = N
     await interaction.followup.send(embed=discord.Embed.from_dict(embed))
 
 
+async def stocks_command(interaction: discord.Interaction) -> None:
+    if not await owner_only(interaction):
+        return
+    await interaction.response.defer(thinking=True)
+    try:
+        await market.refresh(http, details=False)
+    except Exception as exc:
+        log.error("Stock market refresh failed: %s", exc)
+    embeds = [discord.Embed.from_dict(e) for e in market.report_embeds(tracker.cash)]
+    await interaction.followup.send(embeds=embeds)
+
+
 # Discord has no command aliases, so each extra name is its own command
 # pointing at the same handler.
 COMMANDS = [
@@ -280,6 +310,7 @@ COMMANDS = [
      restock_command),
     (["sell"], "Best place to sell: every /travel item grouped by method, or one item in detail",
      sell_command),
+    (["stocks"], "Your stocks, dividend blocks you can afford, and the most stable stocks", stocks_command),
 ]
 for names, description, callback in COMMANDS:
     for name in names:
