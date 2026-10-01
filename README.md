@@ -6,12 +6,31 @@ Polls the Torn API on an interval, then schedules one precise alert per
 trip or cooldown instead of polling tightly near the deadline.
 
 When you're about to land back in Torn, it also sends a **foreign stock
-report** (best items to buy abroad) for your next trip, and you can pull one any time with the
-`/travel` (or `/t`) slash command in the bot's DMs. `/travel-restock`
-(or `/trs`) shows stock and estimated restock times for the
-country you're in (or any country). `/sell item:<name>` compares every way
-to sell an item. Discord has no real aliases, so each short name is its
-own entry in the `/` menu.
+report** (best items to buy abroad) for your next trip. Slash commands in
+the bot's DMs give you the same report and more on demand — see
+[Commands](#commands).
+
+## Commands
+
+| Command | Alias | What it does |
+|---|---|---|
+| `/travel` | `/t` | Foreign stock report: best items to buy abroad, grouped by trip length, with stock predicted at landing, profit per trip and per hour, and where to sell each. |
+| `/travel-restock [country]` | `/trs` | Stock, sell-out and restock estimates for the country you're in or flying to, or the `country` you pick. |
+| `/sell item:<name> [qty]` | — | Ranks every way to sell an item (each TornExchange trader vs the item market after undercut and fee), for `qty` units (default: your travel capacity). Item names autocomplete. |
+
+Discord has no real aliases, so each alias is its own entry in the `/`
+menu. Commands only answer the user in `DISCORD_USER_ID`; anyone else gets
+"This bot is private." After commands are added or renamed, restart Discord
+(Ctrl+R / Cmd+R on desktop, fully close the app on mobile) to see them —
+until then, typing the name just sends a plain message the bot ignores.
+
+### Automatic DMs
+
+| When | Message |
+|---|---|
+| `ALERT_LEAD_SECONDS` before any landing | 🛬 Landing in ~30s — *destination* |
+| Right after the alert for a landing in Torn | The `/travel` stock report |
+| Drug cooldown reaches 0 | 💊 Drug cooldown is over |
 
 ## 1. Create the Discord bot
 
@@ -29,10 +48,12 @@ name anywhere → **Copy User ID** → put it in `.env` as `DISCORD_USER_ID`.
 
 ## 3. Get a Torn API key
 
-torn.com → **Settings → API** → create a new key with **Minimal Access**
-→ put it in `.env` as `TORN_API_KEY`. The bot reads the `travel` and
-`cooldowns` selections; if it logs an access-level error, raise the key to
-**Limited Access**. Don't use a Full Access key — the bot never needs it.
+torn.com → **Settings → API** → create a new key with **Limited Access**
+→ put it in `.env` as `TORN_API_KEY`. The bot only reads data: `travel`,
+`cooldowns` and `money` (for the cash check), plus item details and
+item-market listings. A Minimal key covers travel and cooldowns, but the
+cash check then shows "cash unknown". Don't use a Full Access key — the bot
+never needs it.
 
 ## 4. Run it
 
@@ -83,7 +104,6 @@ journalctl -u torn-notifier -f        # tail logs
   This only affects how soon a trip is detected, not alert accuracy: the
   alert is timed from Torn's arrival timestamp. The default is fine even
   for the shortest flights.
-
 - `TRAVEL_CAPACITY` — how many items you can carry per trip (default 5).
   Set this to your real capacity; profit numbers scale with it.
 - `TRAVEL_BUDGET` — the most cash you carry abroad (default: no cap). Items
@@ -119,7 +139,10 @@ bottom of each group. For each item it shows:
   keep updated. The bot snapshots it every 5 minutes and uses the last 90
   minutes to estimate how fast each item sells, then projects that over
   your flight. Until it has ~20 minutes of history it shows "no trend yet".
-  Restocks aren't predicted: an item that's out now is listed as out.
+  Items that are out now are listed as out, with a restock estimate when
+  the bot has one (see `/travel-restock`).
+- **Where to sell:** 🤝 *trader* or 🏪 market, whichever nets more (see
+  `/sell`).
 - **Profit per trip:** (best net sale price − shop cost) × the items you can
   actually buy (your capacity, capped by your budget and by predicted stock).
 - **Profit per hour:** profit per trip ÷ round-trip flight time.
@@ -131,12 +154,11 @@ bottom of each group. For each item it shows:
 Flight times start from Torn's standard table for your travel method and
 switch to your real flight times once the bot has seen you fly there.
 Snapshots and flight times are kept in `state.json` so restarts don't lose
-them. Market value is an average of recent sales, so real sale prices can
-be a bit lower. Plushies and flowers sell easily; for less-traded items
-(e.g. Raw Ivory, Tiger Bone Powder) check the item market before buying a
-full load, because selling 18 at market value may take a while.
+them. Plushies and flowers sell easily; for less-traded items (e.g. Raw
+Ivory, Tiger Bone Powder) check the item market before buying a full load
+if you plan to list rather than sell to a trader.
 
-## Restock watch (`/restock`)
+## Restock watch (`/travel-restock`)
 
 For the country you're in or flying to (or one you pick), lists the most
 profitable items with stock now and either when they'll sell out, or —
