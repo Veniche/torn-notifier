@@ -1,5 +1,7 @@
 # Torncierge
 
+<img src="assets/torncierge.png" alt="Torncierge icon" width="96">
+
 A Discord helper bot for Torn City: travel alerts and trade planning,
 selling, stock-market dividends and spending — growing as new tools are
 added.
