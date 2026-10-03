@@ -314,6 +314,34 @@ async def sell_command(interaction: discord.Interaction, item: Optional[str] = N
     await interaction.followup.send(embed=discord.Embed.from_dict(embed))
 
 
+async def held_command(interaction: discord.Interaction) -> None:
+    if not await owner_only(interaction):
+        return
+    await interaction.response.defer(thinking=True)
+    try:
+        await tracker.refresh(http)
+    except Exception as exc:
+        log.error("Stock refresh failed: %s", exc)
+    try:
+        held = await tracker.fetch_inventory(http)
+    except Exception as exc:
+        log.error("Inventory fetch failed: %s", exc)
+        await interaction.followup.send(f"Couldn't read your inventory: {exc}")
+        return
+    # Price what you actually hold from live listings, not Torn's average.
+    now = time.time()
+    for item_id in tracker.foreign_item_ids() & held.keys():
+        if now - tracker.listings.get(item_id, [0, 0])[1] > travel.LISTING_CACHE_SECONDS:
+            try:
+                await tracker.fetch_listing(http, item_id)
+            except Exception as exc:
+                log.error("Listing fetch for item %s failed: %s", item_id, exc)
+                break  # likely rate-limited; the rest show as estimates
+    tracker.save()
+    embeds = [discord.Embed.from_dict(e) for e in tracker.held_embeds(held)]
+    await interaction.followup.send(embeds=embeds)
+
+
 @app_commands.describe(reserve="Cash to keep ready: an amount like 38m, or auto (= /spend total) — default none")
 async def stocks_command(interaction: discord.Interaction, reserve: Optional[str] = None) -> None:
     if not await owner_only(interaction):
@@ -408,6 +436,8 @@ COMMANDS = [
      restock_command),
     (["sell"], "Best place to sell: every /travel item grouped by method, or one item in detail",
      sell_command),
+    (["sell-held", "sh"], "Travel items in your inventory, how many, and where each sells best",
+     held_command),
     (["stocks"], "Your stocks, dividend blocks you can afford, and the most stable stocks", stocks_command),
     (["spend"], "What you'll need to pay: rent, upkeep and your entries, until next rent", spend_command),
     (["spend-add"], "Add or replace a spending entry (cash or items, one-off or repeating)", spend_add_command),

@@ -27,6 +27,7 @@ TORN_ITEMS_URL = "https://api.torn.com/torn/"
 TORN_USER_URL = "https://api.torn.com/user/"
 TE_PRICES_URL = "https://tornexchange.com/api/prices/{trader}"
 TORN_LISTINGS_URL = "https://api.torn.com/v2/market/{item_id}/itemmarket"
+TORN_INVENTORY_URL = "https://api.torn.com/v2/user/inventory"
 USER_AGENT = "torncierge (personal bot; github.com/Veniche/torncierge)"
 
 TYPE_ICONS = {"Plushie": "🧸 ", "Flower": "🌸 "}
@@ -306,6 +307,31 @@ class StockTracker:
         if listings:
             self.listings[item_id] = [int(listings[0]["price"]), int(time.time())]
 
+    async def fetch_inventory(self, session: aiohttp.ClientSession) -> dict[int, int]:
+        """Item id -> how many you hold (faction-owned items excluded)."""
+        held: dict[int, int] = {}
+        offset, page = 0, 250
+        while True:
+            # Torn caches inventory for an hour; a timestamp bypasses that, so
+            # items bought on the trip you just landed from show up.
+            params = {"limit": page, "offset": offset, "timestamp": int(time.time()), "key": self.api_key}
+            async with session.get(TORN_INVENTORY_URL, params=params, timeout=20) as resp:
+                data = await resp.json()
+            if "error" in data:
+                raise ValueError(data["error"])
+            items = (data.get("inventory") or {}).get("items") or []
+            for item in items:
+                if not item.get("faction_owned"):
+                    held[item["id"]] = held.get(item["id"], 0) + item["amount"]
+            if len(items) < page:
+                return held
+            offset += page
+
+    def foreign_item_ids(self) -> set[int]:
+        """Every item sold in a foreign shop, per the latest YATA snapshot."""
+        return {item["id"] for country in self.latest.values() for item in country.get("stocks", [])
+                if item["id"] in self.items}
+
     async def _fetch_te_prices(self, session: aiohttp.ClientSession, trader: str) -> None:
         url = TE_PRICES_URL.format(trader=trader)
         params = {"key": self.te_key}
@@ -564,4 +590,32 @@ class StockTracker:
         note = (f" · *market price estimated, listing not checked yet ({unchecked})" if unchecked else "")
         embeds[-1]["footer"] = {"text": f"Per unit, net of {self.market_fee:.0%} market fee and "
                                         f"${self.market_undercut:,} undercut · items from /travel{note}"}
+        return embeds
+
+    def held_embeds(self, held: dict[int, int]) -> list[dict]:
+        """Foreign-shop items in your inventory, grouped by where they sell best."""
+        if not self.latest or not self.items:
+            return [{"title": "Travel items you hold", "description": "No stock data yet — try again in a minute."}]
+        by_method: dict[str, list[tuple[int, str]]] = {}
+        total = 0
+        for item_id in self.foreign_item_ids() & held.keys():
+            qty = held[item_id]
+            net, where = self.best_sale(item_id)
+            total += net * qty
+            name = TYPE_ICONS.get(self.items[item_id]["type"], "") + self.items[item_id]["name"]
+            estimate = "*" if item_id not in self.listings else ""
+            by_method.setdefault(where, []).append(
+                (net * qty, f"**{name}** ×{qty:,} — ${net:,} each · **${net * qty:,}**{estimate}"))
+        if not by_method:
+            return [{"title": "Travel items you hold", "description": "None of the items sold abroad are in your inventory."}]
+        embeds = []
+        for where in sorted(by_method, key=lambda w: (w == "item market", w)):
+            lines = [line for _, line in sorted(by_method[where], reverse=True)]
+            embeds.append({"title": f"Sell to {self._via(where)} ({len(lines)})", "description": "\n".join(lines)})
+        count = sum(len(lines) for lines in by_method.values())
+        unchecked = sum(1 for i in self.foreign_item_ids() & held.keys() if i not in self.listings)
+        note = f" · *market price estimated, listing not checked ({unchecked})" if unchecked else ""
+        embeds[-1]["footer"] = {"text": f"{count} item{'s' if count != 1 else ''} worth {money(total)} at best "
+                                        f"sale · net of {self.market_fee:.0%} market fee and "
+                                        f"${self.market_undercut:,} undercut{note}"}
         return embeds
