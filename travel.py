@@ -12,6 +12,7 @@ your undercut, minus Torn's sales fee).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -28,6 +29,12 @@ TORN_USER_URL = "https://api.torn.com/user/"
 TE_PRICES_URL = "https://tornexchange.com/api/prices/{trader}"
 TORN_LISTINGS_URL = "https://api.torn.com/v2/market/{item_id}/itemmarket"
 TORN_INVENTORY_URL = "https://api.torn.com/v2/user/inventory"
+# Categories /v2/user/inventory accepts (it requires one per request).
+INVENTORY_CATEGORIES = {
+    "Collectible", "Clothing", "Other", "Tool", "Melee", "Defensive", "Material", "Car", "Primary",
+    "Secondary", "Book", "Special", "Supply Pack", "Temporary", "Enhancer", "Artifact", "Flower",
+    "Booster", "Medical", "Candy", "Jewelry", "Alcohol", "Plushie", "Drug", "Energy Drink",
+}
 USER_AGENT = "torncierge (personal bot; github.com/Veniche/torncierge)"
 
 TYPE_ICONS = {"Plushie": "🧸 ", "Flower": "🌸 "}
@@ -308,24 +315,37 @@ class StockTracker:
             self.listings[item_id] = [int(listings[0]["price"]), int(time.time())]
 
     async def fetch_inventory(self, session: aiohttp.ClientSession) -> dict[int, int]:
-        """Item id -> how many you hold (faction-owned items excluded)."""
+        """Item id -> how many you hold, in the categories foreign items come in.
+
+        Equipped and faction-owned items are left out: they aren't yours to sell as they are.
+        """
+        # The API only answers one category at a time, so ask just the ones
+        # foreign items come in (a type it doesn't list would be an error).
+        categories = {self.items[i]["type"] for i in self.foreign_item_ids()} & INVENTORY_CATEGORIES
         held: dict[int, int] = {}
-        offset, page = 0, 250
+        for items in await asyncio.gather(*(self._fetch_inventory_category(session, c)
+                                            for c in sorted(categories))):
+            for item in items:
+                if not item.get("faction_owned") and not item.get("equipped"):
+                    held[item["id"]] = held.get(item["id"], 0) + item["amount"]
+        return held
+
+    async def _fetch_inventory_category(self, session: aiohttp.ClientSession, category: str) -> list[dict]:
+        items: list[dict] = []
+        page = 250
         while True:
             # Torn caches inventory for an hour; a timestamp bypasses that, so
             # items bought on the trip you just landed from show up.
-            params = {"limit": page, "offset": offset, "timestamp": int(time.time()), "key": self.api_key}
+            params = {"cat": category, "limit": page, "offset": len(items),
+                      "timestamp": int(time.time()), "key": self.api_key}
             async with session.get(TORN_INVENTORY_URL, params=params, timeout=20) as resp:
                 data = await resp.json()
             if "error" in data:
-                raise ValueError(data["error"])
-            items = (data.get("inventory") or {}).get("items") or []
-            for item in items:
-                if not item.get("faction_owned"):
-                    held[item["id"]] = held.get(item["id"], 0) + item["amount"]
-            if len(items) < page:
-                return held
-            offset += page
+                raise ValueError(f"{category}: {data['error']}")
+            batch = (data.get("inventory") or {}).get("items") or []
+            items += batch
+            if len(batch) < page:
+                return items
 
     def foreign_item_ids(self) -> set[int]:
         """Every item sold in a foreign shop, per the latest YATA snapshot."""
