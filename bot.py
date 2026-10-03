@@ -49,6 +49,9 @@ TE_TRADERS = [t.strip() for t in (os.getenv("TE_TRADERS") or os.getenv("TE_TRADE
 ITEM_MARKET_UNDERCUT = int(os.getenv("ITEM_MARKET_UNDERCUT", "0"))
 ITEM_MARKET_FEE = float(os.getenv("ITEM_MARKET_FEE", "5")) / 100
 STOCK_POLL_SECONDS = int(os.getenv("STOCK_POLL_SECONDS", "300"))
+# Items /sell-held never offers for sale (comma-separated names), e.g. the
+# drugs you keep for happy jumps.
+KEEP_ITEMS = [n.strip() for n in (os.getenv("KEEP_ITEMS") or "").split(",") if n.strip()]
 STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json")
 
 # Cooldowns only come back as "seconds remaining", so the end time we
@@ -65,7 +68,7 @@ intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 tracker = travel.StockTracker(STATE_PATH, TORN_API_KEY, TRAVEL_CAPACITY, TRAVEL_BUDGET,
-                             TE_API_KEY, TE_TRADERS, ITEM_MARKET_UNDERCUT, ITEM_MARKET_FEE)
+                             TE_API_KEY, TE_TRADERS, ITEM_MARKET_UNDERCUT, ITEM_MARKET_FEE, KEEP_ITEMS)
 http: aiohttp.ClientSession | None = None
 
 
@@ -330,7 +333,7 @@ async def held_command(interaction: discord.Interaction) -> None:
         return
     # Price what you actually hold from live listings, not Torn's average.
     now = time.time()
-    for item_id in tracker.foreign_item_ids() & held.keys():
+    for item_id in tracker.held_candidates() & held.keys():
         if now - tracker.listings.get(item_id, [0, 0])[1] > travel.LISTING_CACHE_SECONDS:
             try:
                 await tracker.fetch_listing(http, item_id)
@@ -436,7 +439,7 @@ COMMANDS = [
      restock_command),
     (["sell"], "Best place to sell: every /travel item grouped by method, or one item in detail",
      sell_command),
-    (["sell-held", "sh"], "Travel items in your inventory, how many, and where each sells best",
+    (["sell-held", "sh"], "Travel items in your inventory worth selling, how many, and where each sells best",
      held_command),
     (["stocks"], "Your stocks, dividend blocks you can afford, and the most stable stocks", stocks_command),
     (["spend"], "What you'll need to pay: rent, upkeep and your entries, until next rent", spend_command),

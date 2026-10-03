@@ -23,7 +23,7 @@ the bot's DMs give you the same report and more on demand — see
 | `/travel` | `/t` | Foreign stock report: best items to buy abroad, grouped by trip length, with stock predicted at landing, profit per trip and per hour, and where to sell each. |
 | `/travel-restock [country]` | `/trs` | Stock, sell-out and restock estimates for the country you're in or flying to, or the `country` you pick. |
 | `/sell` | — | Every item in the `/travel` report, grouped by where it sells best (🤝 each trader / 🏪 item market), with the net price per unit and how far ahead of the next-best method it is. |
-| `/sell-held` | `/sh` | Items sold in foreign shops that are in your inventory right now: how many, grouped by where each sells best, with each one's total and the grand total. Skips equipped and faction-owned items. Reads your inventory live (one request per item category, bypassing Torn's 1-hour cache) and checks live listings for what you hold. |
+| `/sell-held` | `/sh` | Travel items you're holding that are worth selling: anything on the `/sell` list plus foreign plushies and flowers, how many, grouped by where each sells best, with totals. Skips suitcases (they raise your travel capacity), `KEEP_ITEMS`, equipped and faction-owned items, and anything under $50k in total. Reads your inventory live (one request per item category, bypassing Torn's 1-hour cache) and checks live listings for what you hold. |
 | `/stocks [reserve:<amount>]` | — | Your stock holdings (value, monthly swing, block status / days to next dividend), the dividend blocks your free money can afford ranked by yearly yield, and the most stable stocks for money you may need soon. `reserve` is cash to keep ready first: an amount (`38m`, `500k`, `1.2bn`, plain digits) or `auto` (the `/spend` total until your next rent); without it nothing is held back. |
 | `/spend [days]` | — | What you'll need to pay until your next rent (or the next `days`): rent and upkeep from the Torn API plus your own entries, with a total and per-day average. |
 | `/spend-add name amount every [due]` | — | Add or replace an entry. `amount`: cash (`4m`) or items (`5 xanax`, priced at the lowest listing). `every`: `once`, `daily`, `weekly` or `7d`. `due`: `today`, `tomorrow` or `3d` (optional). |
@@ -86,6 +86,7 @@ TORN_API_KEY=your-api-key
 # ITEM_MARKET_UNDERCUT=10
 # ITEM_MARKET_FEE=5
 # RENT_ALERT_DAYS=1
+# KEEP_ITEMS=Xanax,Ecstasy
 # POLL_INTERVAL_SECONDS=60
 ```
 
@@ -137,6 +138,9 @@ journalctl -u torncierge -f           # tail logs
   property) at which to DM you, comma-separated (default `1`). `1,2` also
   warns the day before. If a lease ends without an alert, Torn may count
   the last day as 0 — use `0,1`.
+- `KEEP_ITEMS` — item names `/sell-held` never offers for sale, comma-separated
+  (e.g. `Xanax,Ecstasy` if you keep them for happy jumps). Suitcases are
+  always kept.
 - `STOCK_POLL_SECONDS` — how often stock snapshots are taken (default 300).
 
 Set these in `.env`, then restart the service

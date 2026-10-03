@@ -39,6 +39,9 @@ USER_AGENT = "torncierge (personal bot; github.com/Veniche/torncierge)"
 
 TYPE_ICONS = {"Plushie": "🧸 ", "Flower": "🌸 "}
 
+# /sell-held hides items whose total value is below this.
+HELD_MIN_VALUE = 50_000
+
 # Items shown per trip-length group; keeps the report under Discord's
 # 6,000-character limit per message.
 TOP_PER_GROUP = 8
@@ -134,7 +137,8 @@ def money(n: float) -> str:
 class StockTracker:
     def __init__(self, state_path: str, api_key: str, capacity: int, budget: int | None,
                  te_key: str | None = None, te_traders: list[str] | None = None,
-                 market_undercut: int = 0, market_fee: float = 0.05) -> None:
+                 market_undercut: int = 0, market_fee: float = 0.05,
+                 keep_items: list[str] | None = None) -> None:
         self.state_path = state_path
         self.api_key = api_key
         self.capacity = capacity
@@ -146,6 +150,8 @@ class StockTracker:
         self.te_fetched = 0.0
         self.market_undercut = market_undercut
         self.market_fee = market_fee
+        # Lowercased names /sell-held never offers for sale (e.g. happy-jump drugs).
+        self.keep_items = {n.lower() for n in keep_items or []}
         # item_id -> [lowest item-market listing, fetched_at]
         self.listings: dict[int, list[int]] = {}
         # "country:item_id" -> [[restocked_at, seconds_empty, restock_qty], ...]
@@ -315,13 +321,13 @@ class StockTracker:
             self.listings[item_id] = [int(listings[0]["price"]), int(time.time())]
 
     async def fetch_inventory(self, session: aiohttp.ClientSession) -> dict[int, int]:
-        """Item id -> how many you hold, in the categories foreign items come in.
+        """Item id -> how many you hold, in the categories /sell-held looks at.
 
         Equipped and faction-owned items are left out: they aren't yours to sell as they are.
         """
         # The API only answers one category at a time, so ask just the ones
-        # foreign items come in (a type it doesn't list would be an error).
-        categories = {self.items[i]["type"] for i in self.foreign_item_ids()} & INVENTORY_CATEGORIES
+        # needed (a type it doesn't list would be an error).
+        categories = {self.items[i]["type"] for i in self.held_candidates()} & INVENTORY_CATEGORIES
         held: dict[int, int] = {}
         for items in await asyncio.gather(*(self._fetch_inventory_category(session, c)
                                             for c in sorted(categories))):
@@ -351,6 +357,14 @@ class StockTracker:
         """Every item sold in a foreign shop, per the latest YATA snapshot."""
         return {item["id"] for country in self.latest.values() for item in country.get("stocks", [])
                 if item["id"] in self.items}
+
+    def held_candidates(self) -> set[int]:
+        """Items /sell-held looks for: the /sell list plus foreign plushies and
+        flowers, minus suitcases (they raise travel capacity) and KEEP_ITEMS."""
+        ids = set(self._sell_list_ids()) | {i for i in self.foreign_item_ids()
+                                             if self.items[i]["type"] in ("Plushie", "Flower")}
+        return {i for i in ids if not self.items[i]["name"].endswith("Suitcase")
+                and self.items[i]["name"].lower() not in self.keep_items}
 
     async def _fetch_te_prices(self, session: aiohttp.ClientSession, trader: str) -> None:
         url = TE_PRICES_URL.format(trader=trader)
@@ -578,16 +592,21 @@ class StockTracker:
             lines.append("_No TornExchange traders configured — only the item market is compared._")
         return {"title": f"Where to sell {name}", "description": "\n".join(lines)}
 
-    def bulk_sell_embeds(self) -> list[dict]:
-        """Where to sell each item in the travel report, grouped by best method."""
-        if not self.latest or not self.items:
-            return [{"title": "Where to sell", "description": "No stock data yet — try again in a minute."}]
+    def _sell_list_ids(self) -> list[int]:
+        """Items in the travel report (shown or sold out), in report order."""
         item_ids: list[int] = []
         for shown, gone in self._report_selection():
             for r in shown + gone:
                 item_id = int(r.key.split(":")[1])
                 if item_id not in item_ids:
                     item_ids.append(item_id)
+        return item_ids
+
+    def bulk_sell_embeds(self) -> list[dict]:
+        """Where to sell each item in the travel report, grouped by best method."""
+        if not self.latest or not self.items:
+            return [{"title": "Where to sell", "description": "No stock data yet — try again in a minute."}]
+        item_ids = self._sell_list_ids()
         by_method: dict[str, list[tuple[int, str]]] = {}
         for item_id in item_ids:
             options = self.sale_options(item_id)
@@ -613,29 +632,34 @@ class StockTracker:
         return embeds
 
     def held_embeds(self, held: dict[int, int]) -> list[dict]:
-        """Foreign-shop items in your inventory, grouped by where they sell best."""
+        """Travel items in your inventory worth selling, grouped by where they sell best."""
         if not self.latest or not self.items:
             return [{"title": "Travel items you hold", "description": "No stock data yet — try again in a minute."}]
         by_method: dict[str, list[tuple[int, str]]] = {}
-        total = 0
-        for item_id in self.foreign_item_ids() & held.keys():
+        total = small = unchecked = 0
+        for item_id in self.held_candidates() & held.keys():
             qty = held[item_id]
             net, where = self.best_sale(item_id)
+            if net * qty < HELD_MIN_VALUE:
+                small += 1
+                continue
             total += net * qty
+            unchecked += item_id not in self.listings
             name = TYPE_ICONS.get(self.items[item_id]["type"], "") + self.items[item_id]["name"]
             estimate = "*" if item_id not in self.listings else ""
             by_method.setdefault(where, []).append(
                 (net * qty, f"**{name}** ×{qty:,} — ${net:,} each · **${net * qty:,}**{estimate}"))
         if not by_method:
-            return [{"title": "Travel items you hold", "description": "None of the items sold abroad are in your inventory."}]
+            hidden = f" ({small} under {money(HELD_MIN_VALUE)} hidden)" if small else ""
+            return [{"title": "Travel items you hold", "description": f"Nothing worth selling{hidden}."}]
         embeds = []
         for where in sorted(by_method, key=lambda w: (w == "item market", w)):
             lines = [line for _, line in sorted(by_method[where], reverse=True)]
             embeds.append({"title": f"Sell to {self._via(where)} ({len(lines)})", "description": "\n".join(lines)})
         count = sum(len(lines) for lines in by_method.values())
-        unchecked = sum(1 for i in self.foreign_item_ids() & held.keys() if i not in self.listings)
+        hidden = f" · {small} under {money(HELD_MIN_VALUE)} hidden" if small else ""
         note = f" · *market price estimated, listing not checked ({unchecked})" if unchecked else ""
         embeds[-1]["footer"] = {"text": f"{count} item{'s' if count != 1 else ''} worth {money(total)} at best "
                                         f"sale · net of {self.market_fee:.0%} market fee and "
-                                        f"${self.market_undercut:,} undercut{note}"}
+                                        f"${self.market_undercut:,} undercut{hidden}{note}"}
         return embeds
